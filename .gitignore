@@ -8,3 +8,4 @@ __pycache__/
 report*.html
 models.json
 candidate.json
+/NOTES.md

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-AnyBench is a Python package under `src/anybench/`. `cli.py` defines the `anybench` commands; `dataset.py` builds cases from Git history; `runner.py` and `sandbox.py` execute attempts in Docker; `evaluate.py` and `report.py` score and present results. Shared records and model configuration live in `model.py`, and API calls in `llm.py`. Tests are in `tests/test_anybench.py`. The root `Dockerfile` defines the default sandbox image, and `.github/workflows/ci.yml` runs CI. There is no separate assets directory; reports are generated as HTML.
+AnyBench is a Python package under `src/anybench/`. `cli.py` defines the `anybench` commands; `dataset.py` builds cases from Git history; `runner.py` and `sandbox.py` execute attempts in Docker; `evaluate.py` and `report.py` score and present results. Shared records and model configuration live in `model.py`, and API calls in `llm.py`. Tests are in `tests/test_anybench.py`. The root `Dockerfile` defines the default sandbox image, and `.github/workflows/ci.yml` runs CI.
 
 ## Build, Test, and Development Commands
 
@@ -22,8 +22,12 @@ Tests use `unittest`. Add focused methods named `test_<behavior>` to the relevan
 
 ## Commit & Pull Request Guidelines
 
-The initial commit uses a short, imperative subject. Follow that pattern, for example `Validate sandbox test commands`. In pull requests, explain the behavior changed, link an issue when applicable, and list the tests run. Include a report screenshot when changing rendered HTML.
+Use short, imperative commit subjects such as `Validate sandbox test commands`. In pull requests, explain the behavior changed, link an issue when applicable, and list the tests run. Include a report screenshot when changing rendered HTML.
 
 ## Security & Configuration
 
 Pass provider credentials through the environment variable named by `api_key_env` in model configuration; never commit keys. Keep generated datasets, attempts, and reports under the ignored `.anybench/` directory. They may contain private repository code. Review generated test commands before running them against a repository.
+
+## Local Future Notes
+
+When the user refers to "my notes" or future AnyBench plans, read the root `NOTES.md` before acting. The file is intentionally Git-ignored and may be absent in other clones.
