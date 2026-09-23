@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
 from .llm import ChatClient
+from .enhanced import enhanced_loop
+from .harness import PROXY_IMAGE, execute_harness, external_sandbox
 from .model import Case, ModelConfig, RunRecord
 from .sandbox import Sandbox, ToolError
 
@@ -96,26 +98,65 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
             workspace_size: str = "512m", memory: str = "1g") -> RunRecord:
     start = time.monotonic()
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
-                       started_at=time.time())
+                       started_at=time.time(), harness=config.harness, model_id=config.model)
+    record.context_profile = config.context_profile if config.harness == "anybench" else "external"
     try:
-        with Sandbox(case, image=image, workspace_size=workspace_size, memory=memory) as sandbox:
+        context = (Sandbox(case, image=image, workspace_size=workspace_size, memory=memory)
+                   if config.harness == "anybench" else
+                   external_sandbox(case, config, workspace_size, memory))
+        with context as sandbox:
             record.setup_seconds = time.monotonic() - start
-            client = ChatClient(config)
-            task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
-            _, trace, pt, ct, calls, model_seconds = agent_loop(
-                client, sandbox, task, max_steps=max_steps)
-            record.trace = trace
-            record.prompt_tokens, record.completion_tokens, record.tool_calls = pt, ct, calls
-            record.model_seconds = model_seconds
-            record.diff = sandbox.diff()
-            record.status = "completed"
+            if config.harness == "anybench":
+                client = ChatClient(config)
+                task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
+                harness_start = time.monotonic()
+                if config.context_profile == "enhanced":
+                    result = enhanced_loop(client, sandbox, task, config, max_steps)
+                    record.context_window_tokens = config.context_window_tokens
+                    record.harness_version = "anybench-context-v1"
+                    for name in ("trace", "prompt_tokens", "completion_tokens", "tool_calls",
+                                 "model_seconds", "model_calls_by_purpose", "compactions",
+                                 "peak_context_tokens", "artifact_directory", "verification_runs",
+                                 "stop_reason", "error"):
+                        setattr(record, name, getattr(result, name))
+                    record.diff = sandbox.collect_container_diff(trusted_baseline=True)
+                else:
+                    _, trace, pt, ct, calls, model_seconds = agent_loop(
+                        client, sandbox, task, max_steps=max_steps)
+                    record.trace = trace
+                    record.prompt_tokens, record.completion_tokens, record.tool_calls = pt, ct, calls
+                    record.model_seconds = model_seconds
+                    record.harness_version = "anybench-legacy-v1"
+                    record.diff = sandbox.diff()
+                record.harness_seconds = time.monotonic() - harness_start
+                record.cached_prompt_tokens = getattr(client, "cached_prompt_tokens", None)
+                record.cache_creation_tokens = getattr(client, "cache_creation_tokens", None)
+            else:
+                harness_start = time.monotonic()
+                usage = execute_harness(sandbox, case, config)
+                record.harness_seconds = time.monotonic() - harness_start
+                record.prompt_tokens = usage.prompt_tokens or 0
+                record.completion_tokens = usage.completion_tokens or 0
+                record.tool_calls = usage.tool_calls
+                record.cached_prompt_tokens = usage.cached_prompt_tokens
+                record.cache_creation_tokens = usage.cache_creation_tokens
+                record.usage_available = (usage.prompt_tokens is not None or
+                                          usage.completion_tokens is not None)
+                record.harness_version = usage.version
+                record.diff = sandbox.collect_container_diff()
+            record.status = ("completed" if record.stop_reason in {"", "completed"}
+                             else "exhausted" if record.stop_reason in {"step_limit", "context_limit"}
+                             else "error")
             if case.test_command and not case.external_validation:
                 test_start = time.monotonic()
                 record.test_passed, test_output = sandbox.test(case.test_command)
                 record.test_seconds = time.monotonic() - test_start
                 record.trace.append({"test_command": case.test_command, "result": test_output})
     except Exception as exc:
-        record.error = f"{type(exc).__name__}: {exc}"
+        record.status = "error"
+        if record.stop_reason in {"", "completed"}:
+            record.stop_reason = "error"
+        record.error = (record.error + "; " if record.error else "") + f"{type(exc).__name__}: {exc}"
     record.seconds = time.monotonic() - start
     record.finished_at = time.time()
     return record
@@ -161,16 +202,43 @@ def run_sweep(cases: list[Case], configs: list[ModelConfig],
 
 def preflight_run(cases: list[Case], configs: list[ModelConfig],
                   image: str, image_map: dict[str, str] | None = None) -> None:
-    missing = sorted({config.api_key_env for config in configs if not os.environ.get(config.api_key_env)})
+    required = {name for config in configs for name in
+                ([config.api_key_env] if config.api_key_env else []) + list(config.env.values())}
+    missing = sorted(name for name in required if not os.environ.get(name))
     if missing:
         raise ValueError(f"Missing API key environment variables: {', '.join(missing)}")
     daemon = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
                             capture_output=True, text=True)
     if daemon.returncode:
         raise RuntimeError(f"Docker daemon unavailable: {daemon.stderr.strip()}")
-    images = {(image_map or {}).get(case.repository, image) for case in cases}
+    images = {(image_map or {}).get(case.repository, image) for case in cases
+              if any(config.harness == "anybench" for config in configs)}
+    images.update(config.image for config in configs if config.harness != "anybench")
+    if any(config.harness != "anybench" for config in configs):
+        images.add(PROXY_IMAGE)
     for selected in sorted(images):
         result = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", selected],
                                 capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError(f"Sandbox image unavailable: {selected}. Build or pull it first")
+    if any(config.harness == "anybench" and config.context_profile == "enhanced" for config in configs):
+        builtin_images = {(image_map or {}).get(case.repository, image) for case in cases}
+        for selected in sorted(builtin_images):
+            checked = subprocess.run(["docker", "run", "--rm", "--network", "none",
+                                      "--entrypoint", "python", selected, "-c",
+                                      "import sys; assert sys.version_info >= (3, 11)"],
+                                     capture_output=True, text=True)
+            if checked.returncode:
+                raise RuntimeError(f"Enhanced harness image {selected} requires Python 3.11+")
+    commands = {"codex": "codex", "claude": "claude", "opencode": "opencode"}
+    for config in configs:
+        if config.harness == "anybench":
+            continue
+        executable = (commands[config.harness] if config.harness in commands
+                      else config.command[0])
+        result = subprocess.run(["docker", "run", "--rm", "--network", "none",
+                                 "--entrypoint", "sh", config.image, "-c",
+                                 'command -v "$1" >/dev/null && command -v tar >/dev/null',
+                                 "sh", executable], capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(f"Harness image {config.image} lacks {executable} or tar")

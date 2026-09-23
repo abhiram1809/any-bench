@@ -41,7 +41,93 @@ Create `.anybench/candidates.json`:
 
 Each file is a JSON array. `api_key_env` is the **environment variable name**, not the key. Set those variables with your shell or secret manager before running. In Bash, `read -rsp 'Builder API key: ' BUILDER_API_KEY; echo; export BUILDER_API_KEY` prompts without echoing the value. Repeat for `CANDIDATE_API_KEY`.
 
-Endpoints must support OpenAI-compatible chat completions and tool calls. Use HTTPS; plain HTTP is accepted only for `localhost` or loopback IPs. Redirects are blocked, so set `base_url` to the provider's final API URL. Private repository content is sent to the configured model providers: the builder sees commit context and patches, the candidate can request files, and the judge sees reference and candidate patches. Use providers authorized to receive that code.
+By default, endpoints use OpenAI-compatible Chat Completions and tool calls. Set `"api":"responses"` for an OpenAI-compatible Responses endpoint, or `"api":"anthropic"` for an Anthropic-compatible Messages endpoint. Each builder, judge, and candidate entry can choose its own API, endpoint, and key variable. Anthropic entries can set `"max_output_tokens":4096`; this is the default. Set `"prompt_cache":false` if an Anthropic-compatible endpoint does not implement Anthropic cache controls. Use HTTPS; plain HTTP is accepted only for `localhost` or loopback IPs. Redirects are blocked, so set `base_url` to the provider's final API URL. Private repository content is sent to the configured model providers: the builder sees commit context and patches, the candidate can request files, and the judge sees reference and candidate patches. Use providers authorized to receive that code.
+
+### Built-in context orchestration
+
+The built-in harness defaults to `"context_profile":"enhanced"` and a **200,000-token**
+working context window. Set `context_window_tokens` per model when its endpoint has a
+different limit. This is the total working window: output space (`max_output_tokens`,
+default 4096) and a 10% estimation reserve are subtracted before allocating input.
+Context maintenance starts at 80% of that input allowance (140,723 tokens with defaults).
+The estimate uses UTF-8 length and is calibrated upward using provider token usage;
+opaque provider output blocks retain their reported token allowance.
+
+```json
+[
+  {"name":"candidate-enhanced","base_url":"https://provider.example/v1","model":"your-model-id","api_key_env":"CANDIDATE_API_KEY","context_profile":"enhanced","context_window_tokens":200000},
+  {"name":"candidate-legacy","base_url":"https://provider.example/v1","model":"your-model-id","api_key_env":"CANDIDATE_API_KEY","context_profile":"legacy"}
+]
+```
+
+Enhanced behavior:
+
+- `Read` returns the **whole file** unless the agent supplies `lines_range`. Results
+  include line numbers and file size. If a read cannot fit after reclaiming older
+  context, the agent receives an explicit error and chooses its own ranges. Full
+  reads have a 2 MB source-file limit; ranged reads can inspect larger files.
+- `List` and literal-text `Search` discover relevant files. Root `AGENTS.md` loads
+  automatically, with `CLAUDE.md` as a fallback. Nested instructions load on access,
+  ancestor first. An edit discovering new instructions is deferred for one turn
+  so the model can review them. Guidance comes only from the immutable base snapshot.
+- Stable system instructions and tool definitions keep normal requests append-only.
+  Older observed outputs can become artifact references; compaction preserves the
+  original task, loaded instructions, recent complete tool exchanges, file-operation
+  records, and a handoff summary. Large histories are summarized in bounded chunks.
+- `Artifact` reads/searches collected output or historical transcripts. Command and
+  search output previews include both ends and a retrieval handle. Individual output
+  collection is bounded at 2 MB and reports truncation; search also stops after
+  10,000 entries. Attempt artifacts have a 64 MB total cap, private files, and a
+  private directory under `.anybench/artifacts/`. They never enter the candidate diff.
+- `Agent` runs sequential, read-only exploration/review in a separate context, with
+  no commands, edits, or nested delegation. It returns findings and a transcript
+  handle. Each child has at most 10 agent turns and leaves one main-agent call for its
+  parent when compaction overhead allows. All main, child, and compaction calls share `--max-steps` (default 30).
+- `Run` executes agent-selected tests/checks inside Docker. Its timeout defaults to
+  120 seconds, capped at 300. Timed-out commands and descendants are terminated;
+  output includes exit status, duration, and workspace status. All enhanced file
+  tools use the live container checkout, including files changed by commands.
+  Custom enhanced sandbox images need Python 3.11+ and Git.
+- Exhaustion is recorded as `status: "exhausted"` with `stop_reason: "step_limit"`
+  or `"context_limit"`, preserving partial diffs and diagnostics. Scoring treats
+  exhausted attempts as failures even if a final evaluator test happens to pass.
+
+Reports distinguish profiles and include the effective window, harness version,
+model calls by purpose, compactions, peak context estimate, verification counts,
+stop reason, and local artifact directory. Existing result files load as legacy;
+metrics not recorded in those files show N/A. Legacy retains its historical step
+semantics, so compare actual usage as well as the configured main-step allowance.
+External harnesses keep their own orchestration. No memory is shared across attempts.
+
+To compare profiles, put the two entries above in `.anybench/comparison-models.json`,
+use the same endpoint/model/settings and image, and run:
+
+```bash
+anybench run .anybench/cases.csv --models .anybench/comparison-models.json \
+  --attempts 3 --concurrency 1 --max-steps 30 --output .anybench/comparison.jsonl
+anybench report .anybench/comparison.jsonl --output .anybench/comparison.html
+```
+
+Use `evaluate` with the same judge for both profiles when judge scoring is needed.
+Compare accuracy and failures alongside tokens, cache reads, time, and model calls;
+fixture tests establish correctness, not live-model quality gains.
+
+Design references: [Cursor's dynamic context discovery](https://cursor.com/blog/dynamic-context-discovery),
+[Claude Code's context window](https://code.claude.com/docs/en/how-claude-code-works#the-context-window),
+[Oh My Pi compaction source](https://github.com/can1357/oh-my-pi/blob/0898ccda8d70761906392a42c99196c18b060ce5/packages/agent/src/compaction/compaction.ts),
+and [OpenCode compaction](https://opencode.ai/docs/config/#compaction).
+
+### Headless candidate harnesses
+
+The built-in harness remains the default. For Codex, Claude Code, OpenCode, or a custom CLI, add a candidate entry with `harness`, `image`, and `allowed_hosts`. The image must already contain the selected CLI, `sh`, `cp`, `sleep`, `tar`, and the repository's test dependencies. Build or pull `python:3.11-slim` for the allowlist proxy. For example:
+
+```json
+[{"name":"codex-example","harness":"codex","model":"your-model-id","api_key_env":"OPENAI_API_KEY","image":"your-codex-image:tag","allowed_hosts":["api.openai.com"]}]
+```
+
+`api_key_env` names the host variable containing the credential. Pass additional required variables with `"env":{"CONTAINER_VARIABLE":"HOST_VARIABLE"}` and list any further HTTPS hosts in `allowed_hosts`. The runner creates a fresh checkout and an internal Docker network for every attempt. The CLI reaches the listed HTTPS hosts through a proxy. The headless CLIs run without interactive approval prompts inside that container. An external attempt runs until it exits or `harness_timeout` seconds elapse (default 1800).
+
+A custom harness uses `"harness":"custom"` and `"command":["your-cli","--headless"]`. AnyBench runs that argument array in `/repo` and sets `ANYBENCH_TASK_FILE=/tmp/task.json` and `ANYBENCH_USAGE_FILE=/tmp/usage.json`. The task file contains `case_id`, `base_commit`, `problem_statement`, and `repository` (`/repo`); it does not expose the reference patch. The custom command edits `/repo`, exits zero on success, and may write usage JSON with `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`, `cache_creation_tokens`, `tool_calls`, and `version`. Missing usage appears as N/A in the report. AnyBench collects the resulting diff and runs the dataset test command afterward. Codex, Claude Code, and OpenCode usage is parsed from their structured event output when available.
 
 ## 3. Build and check a dataset
 
@@ -68,9 +154,9 @@ anybench evaluate .anybench/cases.csv .anybench/attempts.jsonl --models .anybenc
 anybench report .anybench/scored.jsonl --output .anybench/report.html
 ```
 
-`run` uses two concurrent containers by default. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish, but a **new** `run` command replaces its output file after preflight; choose a new filename to keep an earlier run. The HTML report shows accuracy, coverage, throughput, scaling, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions.
+`run` uses two concurrent containers by default. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish, but a **new** `run` command replaces its output file after preflight; choose a new filename to keep an earlier run. The HTML report shows accuracy, coverage, throughput, scaling, harness identity, token and cache usage, tool calls, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions. Older model configs and result files remain readable as built-in Chat Completions runs.
 
-Each container has no network, dropped capabilities, a read-only root filesystem, and CPU, memory, and PID limits. Its editable checkout is copied into a size-limited temporary filesystem; the host snapshot is mounted read-only. The default checkout limit is `512m` and container memory limit is `1g`. For a larger repository, pass both `--workspace-size 1g --memory 2g` to `validate --check-tests` and `run`. The host still needs enough disk space to clone the source repository before the container starts. The candidate's Bash tool accepts only `cat`, `grep`, `glob`, `wc`, and `jq`; the dataset's test command runs separately in the container.
+Containers have dropped capabilities, a read-only root filesystem, and CPU, memory, and PID limits. Built-in harness containers have no network; external harness containers join an internal network with an allowlist proxy. Each editable checkout is copied into a size-limited temporary filesystem; the host snapshot is mounted read-only. The default checkout limit is `512m` and container memory limit is `1g`. For a larger repository, pass both `--workspace-size 1g --memory 2g` to `validate --check-tests` and `run`. The host still needs enough disk space to clone the source repository before the container starts. The enhanced built-in candidate uses `Run` for sandboxed test/check commands. The legacy profile retains its restricted `Bash` tool (`cat`, `grep`, `glob`, `wc`, and `jq`). The dataset's evaluator command stays private and runs separately after the attempt.
 
 ## Common problems
 

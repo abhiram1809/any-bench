@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import ipaddress
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -65,15 +66,67 @@ def read_cases(path: Path) -> list[Case]:
 @dataclass
 class ModelConfig:
     name: str
-    base_url: str
-    model: str
-    api_key_env: str
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
     temperature: float = 0.0
     max_retries: int = 2
+    api: str = "chat_completions"
+    max_output_tokens: int = 4096
+    harness: str = "anybench"
+    command: list[str] = field(default_factory=list)
+    image: str = ""
+    allowed_hosts: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    harness_timeout: int = 1800
+    prompt_cache: bool = True
+    context_profile: str = "enhanced"
+    context_window_tokens: int = 200_000
 
     def __post_init__(self) -> None:
         if not self.name or not self.model:
             raise ValueError("name and model are required")
+        if self.api not in {"chat_completions", "responses", "anthropic"}:
+            raise ValueError("Unknown model API")
+        if self.harness not in {"anybench", "codex", "claude", "opencode", "custom"}:
+            raise ValueError("Unknown harness")
+        if self.harness == "custom" and not self.command:
+            raise ValueError("Custom harness requires command")
+        if self.max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive")
+        if self.context_profile not in {"enhanced", "legacy"}:
+            raise ValueError("context_profile must be enhanced or legacy")
+        if (type(self.context_window_tokens) is not int or
+                self.context_window_tokens * 0.9 <= self.max_output_tokens + 1024):
+            raise ValueError("context_window_tokens must leave room for input and output")
+        if self.max_retries < 0 or self.harness_timeout < 1:
+            raise ValueError("Retry count and harness timeout must be valid")
+        if self.api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",
+                                                 self.api_key_env):
+            raise ValueError("api_key_env must be an environment variable name")
+        if self.harness != "anybench":
+            if not self.image or not self.allowed_hosts:
+                raise ValueError("External harness requires image and allowed_hosts")
+            if not self.api_key_env and not self.env:
+                raise ValueError("External harness requires credential environment variables")
+            if not isinstance(self.allowed_hosts, list) or any(
+                    not isinstance(host, str) or
+                    not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host)
+                    for host in self.allowed_hosts):
+                raise ValueError("allowed_hosts must contain DNS hostnames")
+            if not isinstance(self.command, list) or any(
+                    not isinstance(word, str) or not word for word in self.command):
+                raise ValueError("command must be an argument array")
+            if not isinstance(self.env, dict) or any(
+                    not isinstance(target, str) or not isinstance(source, str) or
+                    not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", target) or
+                    not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", source) or
+                    target.lower() in
+                    {"http_proxy", "https_proxy", "no_proxy"}
+                    for target, source in self.env.items()):
+                raise ValueError("env must map variable names without overriding proxy settings")
+        if self.harness != "anybench" and not self.base_url:
+            return
         try:
             endpoint = urlsplit(self.base_url)
             host = endpoint.hostname
@@ -91,10 +144,8 @@ class ModelConfig:
                 local = host == "localhost"
             if not local:
                 raise ValueError("base_url must use HTTPS except for loopback endpoints")
-        if not self.api_key_env:
+        if not self.api_key_env and self.harness == "anybench":
             raise ValueError("api_key_env is required")
-        if self.max_retries < 0:
-            raise ValueError("max_retries must be non-negative")
 
 
 @dataclass
@@ -112,7 +163,7 @@ class RunRecord:
     test_seconds: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    tool_calls: int = 0
+    tool_calls: int | None = 0
     test_passed: bool | None = None
     judge_score: float | None = None
     judge_reason: str = ""
@@ -122,6 +173,21 @@ class RunRecord:
     diff: str = ""
     error: str = ""
     trace: list[dict] = field(default_factory=list)
+    harness: str = "anybench"
+    model_id: str = ""
+    cached_prompt_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    usage_available: bool = True
+    harness_version: str = ""
+    harness_seconds: float | None = None
+    context_profile: str = "legacy"
+    context_window_tokens: int | None = None
+    model_calls_by_purpose: dict[str, int] | None = None
+    compactions: int | None = None
+    peak_context_tokens: int | None = None
+    artifact_directory: str = ""
+    verification_runs: list[dict] | None = None
+    stop_reason: str = ""
 
 
 def write_jsonl(path: Path, records: list[RunRecord]) -> None:

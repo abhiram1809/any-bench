@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import glob as globlib
+import json
 import os
 import re
 import selectors
 import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -28,8 +30,17 @@ def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(argv, capture_output=True, text=True, **kwargs)
 
 
-def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000) -> subprocess.CompletedProcess:
-    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000,
+                 input_text: str | None = None) -> subprocess.CompletedProcess:
+    stdin = tempfile.TemporaryFile() if input_text is not None else None
+    if stdin is not None:
+        stdin.write(input_text.encode())
+        stdin.seek(0)
+    try:
+        process = subprocess.Popen(argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    finally:
+        if stdin is not None:
+            stdin.close()
     assert process.stdout is not None
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -62,7 +73,7 @@ def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000) -> subpr
         process.wait(timeout=1 if exceeded else max(0, deadline - time.monotonic()))
         output = b"".join(chunks).decode(errors="replace")
         if exceeded:
-            output += "\n[tool output exceeded 2 MB limit]"
+            output += f"\n[tool output exceeded {limit} byte limit]"
         return subprocess.CompletedProcess(argv, 124 if exceeded else process.returncode,
                                            output, "")
     except (subprocess.TimeoutExpired, TimeoutError):
@@ -92,17 +103,62 @@ def prepare_snapshot(repository: str, base_commit: str, root: Path) -> None:
             raise RuntimeError(f"Could not create clean base snapshot: {result.stderr}")
 
 
+def _extract_checkout(archive: tarfile.TarFile, target: Path, size_limit: int) -> None:
+    """Extract a container checkout without allowing archive paths outside target."""
+    root = target.resolve()
+    directories: list[tuple[Path, int]] = []
+    size = 0
+    for member in archive:
+        path = Path(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise RuntimeError("Harness archive contains an unsafe path")
+        destination = (target / path).resolve()
+        if not destination.is_relative_to(root):
+            raise RuntimeError("Harness archive path escapes checkout")
+        size += member.size
+        if size > size_limit:
+            raise RuntimeError("Harness archive exceeds checkout size limit")
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+            directories.append((destination, member.mode))
+        elif member.isfile():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise RuntimeError("Could not read harness archive file")
+            with source, destination.open("wb") as stream:
+                shutil.copyfileobj(source, stream)
+            destination.chmod(member.mode & 0o777)
+        elif member.issym() or member.islnk():
+            link = Path(member.linkname)
+            origin = (destination.parent / link if member.issym() else target / link).resolve()
+            if link.is_absolute() or not origin.is_relative_to(root):
+                raise RuntimeError("Harness archive link escapes checkout")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if member.issym():
+                destination.symlink_to(member.linkname)
+            else:
+                os.link(origin, destination)
+        else:
+            raise RuntimeError("Harness archive contains an unsupported file type")
+    for directory, mode in reversed(directories):
+        directory.chmod(mode & 0o777)
+
+
 class Sandbox:
     """An isolated checkout with Docker for all repository command execution."""
 
     def __init__(self, case: Case, image: str = "anybench-sandbox:latest", memory: str = "1g",
-                 workspace_size: str = "512m"):
+                 workspace_size: str = "512m", network: str = "none",
+                 environment: dict[str, str] | None = None):
         validate_size(memory)
         validate_size(workspace_size)
         self.case = case
         self.image = image
         self.memory = memory
         self.workspace_size = workspace_size
+        self.network = network
+        self.environment = environment or {}
         self._tmp: tempfile.TemporaryDirectory | None = None
         self.root: Path | None = None
         self.container: str | None = None
@@ -116,15 +172,17 @@ class Sandbox:
             self.__exit__(None, None, None)
             raise
         # Keep repository writes on a size-limited tmpfs, never a writable host mount.
-        command = ["docker", "run", "-d", "--rm", "--network", "none",
+        command = ["docker", "run", "-d", "--rm", "--network", self.network,
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--pids-limit", "128", "--memory", self.memory, "--cpus", "1",
                    "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
                    "--tmpfs", f"/repo:rw,exec,nosuid,nodev,size={self.workspace_size},mode=1777",
                    "--env", "HOME=/tmp",
                    "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/repo",
-                   "--mount", f"type=bind,src={self.root},dst=/seed,readonly",
-                   self.image, "sleep", "infinity"]
+                   "--mount", f"type=bind,src={self.root},dst=/seed,readonly"]
+        for name, value in self.environment.items():
+            command.extend(["--env", f"{name}={value}"])
+        command.extend([self.image, "sleep", "infinity"])
         started = _run(command)
         if started.returncode:
             self.__exit__(None, None, None)
@@ -203,10 +261,29 @@ class Sandbox:
     def edit(self, file_path: str, content: str, line_range: list[list[int]]) -> str:
         return self.write(file_path, content, line_range)
 
-    def command(self, argv: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    def command(self, argv: list[str], timeout: int = 60,
+                limit: int = 2_000_000) -> subprocess.CompletedProcess:
         if not self.container:
             raise RuntimeError("Sandbox is not running")
-        return _limited_run(["docker", "exec", self.container, *argv], timeout)
+        return _limited_run(["docker", "exec", self.container, *argv], timeout, limit)
+
+    def enhanced_tool(self, operation: str, arguments: dict) -> dict:
+        """All enhanced tools operate on the live container checkout."""
+        if not self.container:
+            raise RuntimeError("Sandbox is not running")
+        worker = Path(__file__).with_name("workspace_tool.py").read_text()
+        timeout = arguments.get("timeout_seconds", 120) if operation == "Run" else 60
+        if type(timeout) is not int or not 1 <= timeout <= 300:
+            raise ToolError("timeout_seconds must be between 1 and 300")
+        result = _limited_run(["docker", "exec", "-i", self.container, "python", "-c", worker],
+                              timeout + 10, limit=16_000_000,
+                              input_text=json.dumps({"operation": operation, "arguments": arguments}))
+        if result.returncode:
+            raise ToolError(f"Workspace worker failed: {result.stdout}")
+        response = json.loads(result.stdout)
+        if "error" in response:
+            raise ToolError(response["error"])
+        return response
 
     def bash(self, command: str) -> str:
         try:
@@ -244,3 +321,40 @@ class Sandbox:
         if result.returncode:
             raise RuntimeError(f"Could not collect candidate diff: {result.stderr}")
         return result.stdout
+
+    def collect_container_diff(self, trusted_baseline: bool = False) -> str:
+        if not self.container or not self.root:
+            raise RuntimeError("Sandbox is not running")
+        target = self.root.parent / "collected"
+        target.mkdir()
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(["docker", "exec", self.container, "tar", "-C",
+                                        "/repo", "-cf", "-", "."],
+                                       stdout=subprocess.PIPE, stderr=errors)
+            assert process.stdout is not None
+            try:
+                with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+                    unit = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+                    size_limit = int(self.workspace_size[:-1]) * unit[self.workspace_size[-1]]
+                    _extract_checkout(archive, target, size_limit)
+            except Exception:
+                process.kill()
+                process.wait()
+                raise
+            finally:
+                process.stdout.close()
+            if process.wait() != 0:
+                errors.seek(0)
+                error = errors.read().decode(errors="replace")
+                raise RuntimeError(f"Could not collect harness checkout: {error.strip()}")
+        if trusted_baseline:
+            metadata = target / ".git"
+            if metadata.is_symlink() or metadata.is_file():
+                metadata.unlink()
+            elif metadata.exists():
+                shutil.rmtree(metadata)
+            shutil.copytree(self.root / ".git", metadata)
+        if not (target / ".git").is_dir():
+            raise RuntimeError(f"Harness checkout lacks Git baseline: {[p.name for p in target.iterdir()]}")
+        self.root = target
+        return self.diff()

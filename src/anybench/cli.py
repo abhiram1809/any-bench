@@ -69,7 +69,8 @@ def main(argv: list[str] | None = None) -> None:
                      help="Editable checkout limit (default: 512m)")
     run.add_argument("--memory", type=validate_size, default="1g",
                      help="Container memory limit (default: 1g)")
-    run.add_argument("--max-steps", type=int, default=30)
+    run.add_argument("--max-steps", type=int, default=30,
+                     help="Shared model-call budget for enhanced runs; main-loop steps for legacy (default: 30)")
     run.add_argument("--output", type=Path, required=True)
     score = commands.add_parser("evaluate", help="Judge patches and preserve test results")
     score.add_argument("dataset", type=Path)
@@ -106,6 +107,8 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("dataset and output paths must differ")
         if not levels or any(level < 1 for level in levels):
             parser.error("concurrency levels must be positive")
+        if args.max_steps < 1:
+            parser.error("max-steps must be positive")
         cases = read_cases(args.dataset)
         configs = _configs(args.models)
         if not cases:
