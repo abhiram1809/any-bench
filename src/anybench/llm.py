@@ -32,6 +32,12 @@ def parse_json_object(content: str) -> dict:
     raise ValueError("Model did not return a JSON object")
 
 
+class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()
+        raise RuntimeError("LLM API redirect blocked; configure the final endpoint URL")
+
+
 class ChatClient:
     """Minimal OpenAI compatible chat completions client."""
 
@@ -55,9 +61,10 @@ class ChatClient:
             endpoint, data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         )
+        opener = urllib.request.build_opener(_RejectRedirect())
         for attempt in range(self.config.max_retries + 1):
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                with opener.open(request, timeout=self.timeout) as response:
                     data = json.load(response)
                 break
             except urllib.error.HTTPError as exc:

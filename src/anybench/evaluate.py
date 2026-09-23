@@ -44,7 +44,8 @@ def evaluate(records: list[RunRecord], cases: list[Case], judge_client: ChatClie
 
 
 def validate_test_commands(cases: list[Case], image: str = "anybench-sandbox:latest",
-                           image_map: dict[str, str] | None = None) -> list[str]:
+                           image_map: dict[str, str] | None = None,
+                           workspace_size: str = "512m", memory: str = "1g") -> list[str]:
     """Require local checks to fail on the base and pass on the gold revision."""
     errors = []
     for case in cases:
@@ -52,10 +53,12 @@ def validate_test_commands(cases: list[Case], image: str = "anybench-sandbox:lat
             continue
         selected_image = (image_map or {}).get(case.repository, image)
         try:
-            with Sandbox(case, image=selected_image) as base:
+            with Sandbox(case, image=selected_image, workspace_size=workspace_size,
+                         memory=memory) as base:
                 base_passed, _ = base.test(case.test_command)
             gold_case = replace(case, base_commit=case.target_commit)
-            with Sandbox(gold_case, image=selected_image) as gold:
+            with Sandbox(gold_case, image=selected_image, workspace_size=workspace_size,
+                         memory=memory) as gold:
                 gold_passed, gold_output = gold.test(case.test_command)
         except Exception as exc:
             errors.append(f"{case.case_id}: test validation error: {exc}")

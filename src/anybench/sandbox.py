@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob as globlib
 import os
+import re
 import selectors
 import shlex
 import shutil
@@ -15,6 +16,12 @@ from .model import Case
 
 class ToolError(ValueError):
     pass
+
+
+def validate_size(value: str) -> str:
+    if not re.fullmatch(r"[1-9][0-9]*[kmg]", value):
+        raise ValueError("size must be a positive value such as 512m or 2g")
+    return value
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -88,10 +95,14 @@ def prepare_snapshot(repository: str, base_commit: str, root: Path) -> None:
 class Sandbox:
     """An isolated checkout with Docker for all repository command execution."""
 
-    def __init__(self, case: Case, image: str = "anybench-sandbox:latest", memory: str = "1g"):
+    def __init__(self, case: Case, image: str = "anybench-sandbox:latest", memory: str = "1g",
+                 workspace_size: str = "512m"):
+        validate_size(memory)
+        validate_size(workspace_size)
         self.case = case
         self.image = image
         self.memory = memory
+        self.workspace_size = workspace_size
         self._tmp: tempfile.TemporaryDirectory | None = None
         self.root: Path | None = None
         self.container: str | None = None
@@ -104,20 +115,25 @@ class Sandbox:
         except Exception:
             self.__exit__(None, None, None)
             raise
-        # The mount is the only host data visible inside the container.
+        # Keep repository writes on a size-limited tmpfs, never a writable host mount.
         command = ["docker", "run", "-d", "--rm", "--network", "none",
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--pids-limit", "128", "--memory", self.memory, "--cpus", "1",
                    "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+                   "--tmpfs", f"/repo:rw,exec,nosuid,nodev,size={self.workspace_size},mode=1777",
                    "--env", "HOME=/tmp",
                    "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/repo",
-                   "--mount", f"type=bind,src={self.root},dst=/repo",
+                   "--mount", f"type=bind,src={self.root},dst=/seed,readonly",
                    self.image, "sleep", "infinity"]
         started = _run(command)
         if started.returncode:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Docker failed: {started.stderr.strip()}")
         self.container = started.stdout.strip()
+        copied = _run(["docker", "exec", self.container, "cp", "-a", "/seed/.", "/repo/"])
+        if copied.returncode:
+            self.__exit__(None, None, None)
+            raise RuntimeError(f"Could not copy snapshot into bounded workspace: {copied.stderr.strip()}")
         return self
 
     def __exit__(self, *_exc) -> None:
@@ -172,6 +188,16 @@ class Sandbox:
             content = "".join(lines[:start - 1]) + content + "".join(lines[end:])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        if self.container:
+            target = Path("/repo") / path.relative_to(self.root.resolve())
+            parent = _run(["docker", "exec", self.container, "mkdir", "-p", "--",
+                           str(target.parent)])
+            if parent.returncode:
+                raise RuntimeError(f"Could not prepare workspace path: {parent.stderr.strip()}")
+            written = _run(["docker", "exec", "-i", self.container, "sh", "-c",
+                            f"cat > {shlex.quote(str(target))}"], input=content)
+            if written.returncode:
+                raise RuntimeError(f"Could not write edited file into bounded workspace: {written.stderr.strip()}")
         return f"Wrote {file_path}"
 
     def edit(self, file_path: str, content: str, line_range: list[list[int]]) -> str:

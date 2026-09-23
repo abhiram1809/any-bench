@@ -7,8 +7,11 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
+from email.message import Message
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.response import addinfourl
 
 from anybench.dataset import analyze_commit, build_dataset, validate_dataset
 from anybench.cli import main
@@ -203,8 +206,10 @@ class ClientTests(unittest.TestCase):
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": "done"}}],
                                           "usage": {"prompt_tokens": 3,
                                                     "completion_tokens": 2}}).encode())
+        opener = Mock()
+        opener.open.side_effect = fake_open
         with patch.dict(os.environ, {"TEST_API_KEY": "test-secret"}), \
-             patch("anybench.llm.urllib.request.urlopen", side_effect=fake_open):
+             patch("anybench.llm.urllib.request.build_opener", return_value=opener):
             reply = ChatClient(config).complete([{"role": "user", "content": "hello"}])
         self.assertEqual(seen["url"], "https://example.test/v1/chat/completions")
         self.assertEqual(seen["authorization"], "Bearer test-secret")
@@ -217,13 +222,41 @@ class ClientTests(unittest.TestCase):
         response = io.BytesIO(b'{"choices":[{"message":{"content":"done"}}]}')
         throttle = urllib.error.HTTPError("https://example.test", 429, "throttled",
                                           {"Retry-After": "0"}, io.BytesIO(b"busy"))
+        opener = Mock()
+        opener.open.side_effect = [throttle, response]
         with patch.dict(os.environ, {"TEST_API_KEY": "test-secret"}), \
-             patch("anybench.llm.urllib.request.urlopen", side_effect=[throttle, response]) as open_url, \
+             patch("anybench.llm.urllib.request.build_opener", return_value=opener), \
              patch("anybench.llm.time.sleep") as sleep:
             reply = ChatClient(config).complete([{"role": "user", "content": "hello"}])
         self.assertEqual(reply.message["content"], "done")
-        self.assertEqual(open_url.call_count, 2)
+        self.assertEqual(opener.open.call_count, 2)
         sleep.assert_called_once_with(0)
+
+    def test_remote_http_is_rejected_but_loopback_http_is_allowed(self):
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            ModelConfig("provider", "http://example.test/v1", "model", "KEY")
+        self.assertEqual(ModelConfig("local", "http://127.0.0.1:8000/v1", "model", "KEY")
+                         .base_url, "http://127.0.0.1:8000/v1")
+
+    def test_redirect_does_not_forward_api_key(self):
+        requested = []
+        class RedirectingTransport(urllib.request.BaseHandler):
+            handler_order = 100
+            def http_open(self, request):
+                requested.append(request.full_url)
+                headers = Message()
+                headers["Location"] = "http://127.0.0.1:2/collect"
+                response = addinfourl(io.BytesIO(), headers, request.full_url, code=302)
+                response.msg = "Found"
+                return response
+        build_opener = urllib.request.build_opener
+        config = ModelConfig("local", "http://127.0.0.1:1/v1", "model", "TEST_API_KEY")
+        with patch.dict(os.environ, {"TEST_API_KEY": "dummy-key"}), \
+             patch("anybench.llm.urllib.request.build_opener",
+                   side_effect=lambda handler: build_opener(RedirectingTransport(), handler)):
+            with self.assertRaisesRegex(RuntimeError, "redirect blocked"):
+                ChatClient(config).complete([{"role": "user", "content": "hello"}])
+        self.assertEqual(requested, ["http://127.0.0.1:1/v1/chat/completions"])
 
 
 class ToolTests(unittest.TestCase):
@@ -245,6 +278,10 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(run[run.index("--network") + 1], "none")
         self.assertIn("--read-only", run)
         self.assertIn("--cap-drop", run)
+        self.assertIn("type=bind,src=", run[run.index("--mount") + 1])
+        self.assertIn("dst=/seed,readonly", run[run.index("--mount") + 1])
+        self.assertIn("/repo:rw,exec,nosuid,nodev,size=512m,mode=1777", run)
+        self.assertEqual(commands[1][:4], ["docker", "exec", "container-id", "cp"])
         self.assertEqual(commands[-1][:3], ["docker", "rm", "-f"])
 
     def test_command_output_is_bounded(self):
@@ -333,6 +370,10 @@ class DockerToolIntegrationTests(unittest.TestCase):
                 self.assertIn("2", sandbox.bash("wc -l file.txt"))
                 self.assertEqual(sandbox.bash("jq .a new.json").strip(), "1")
                 self.assertIn("new.json", sandbox.bash("glob *.json"))
+                sandbox.write("name$(touch /repo/escaped).txt", "literal\n")
+                self.assertEqual(sandbox.bash("cat 'name$(touch /repo/escaped).txt'").strip(),
+                                 "literal")
+                self.assertFalse(sandbox.test("test -e escaped")[0])
                 self.assertTrue(sandbox.test("test -f new.json")[0])
                 self.assertIn("+TWO", sandbox.diff())
                 client = StubClient(
@@ -358,6 +399,11 @@ class DockerToolIntegrationTests(unittest.TestCase):
             self.assertEqual(record.status, "completed", record.error)
             self.assertTrue(record.test_passed)
             self.assertIn("+TWO", record.diff)
+            with Sandbox(case, workspace_size="8m") as limited:
+                passed, output = limited.test("dd if=/dev/zero of=large.bin bs=1M count=16 status=none")
+                self.assertFalse(passed)
+                self.assertIn("No space left on device", output)
+                self.assertFalse((limited.root / "large.bin").exists())
 
 
 class RunnerTests(unittest.TestCase):
@@ -424,17 +470,20 @@ class RunnerTests(unittest.TestCase):
         case = Case("c", "/tmp/repo", "a", "b", "Fix", "", "")
         config = ModelConfig("m", "https://example.com/v1", "m", "KEY")
         images = []
+        limits = []
         completed = []
-        def fake_run(c, m, attempt, image, steps):
+        def fake_run(c, m, attempt, image, steps, workspace_size, memory):
             images.append(image)
+            limits.append((workspace_size, memory))
             return RunRecord(c.case_id, m.name, attempt, "completed", 1)
         with patch("anybench.runner.run_one", side_effect=fake_run):
             results = run_sweep([case], [config], [1, 2], attempts=3,
                                 image_map={case.repository: "repo-image:latest"},
-                                on_record=completed.append)
+                                on_record=completed.append, workspace_size="128m", memory="2g")
         self.assertEqual([r.concurrency for r in results], [1, 1, 1, 2, 2, 2])
         self.assertEqual([r.attempt for r in results], [1, 2, 3, 1, 2, 3])
         self.assertEqual(images, ["repo-image:latest"] * 6)
+        self.assertEqual(limits, [("128m", "2g")] * 6)
         self.assertEqual(len(completed), 6)
 
     def test_results_append_during_run(self):
@@ -452,7 +501,7 @@ class EvaluationReportTests(unittest.TestCase):
         case = Case("c", "/tmp/repo", "base", "gold", "Fix", "", "",
                     test_command="check")
         class FakeSandbox:
-            def __init__(self, case, image):
+            def __init__(self, case, image, workspace_size, memory):
                 self.case = case
             def __enter__(self):
                 return self
@@ -479,6 +528,10 @@ class EvaluationReportTests(unittest.TestCase):
             report([record], path)
             self.assertIn("Accuracy vs speed", path.read_text())
             self.assertIn("90.0%", path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            path.chmod(0o644)
+            report([record], path)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_report_separates_concurrency_levels(self):
         records = [RunRecord("a", "m", 1, "completed", 2, started_at=100,

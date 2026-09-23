@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import ipaddress
 import json
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass
@@ -72,8 +74,23 @@ class ModelConfig:
     def __post_init__(self) -> None:
         if not self.name or not self.model:
             raise ValueError("name and model are required")
-        if not self.base_url.startswith(("http://", "https://")):
-            raise ValueError("base_url must be HTTP(S)")
+        try:
+            endpoint = urlsplit(self.base_url)
+            host = endpoint.hostname
+            endpoint.port  # Reject malformed ports before sending a credential.
+        except ValueError as exc:
+            raise ValueError("base_url is not a valid URL") from exc
+        if (endpoint.scheme not in {"http", "https"} or not host or
+                endpoint.username is not None or endpoint.password is not None or
+                endpoint.query or endpoint.fragment):
+            raise ValueError("base_url must be an HTTP(S) URL without credentials, query, or fragment")
+        if endpoint.scheme == "http":
+            try:
+                local = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                local = host == "localhost"
+            if not local:
+                raise ValueError("base_url must use HTTPS except for loopback endpoints")
         if not self.api_key_env:
             raise ValueError("api_key_env is required")
         if self.max_retries < 0:

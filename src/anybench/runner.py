@@ -92,12 +92,13 @@ def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: in
 
 
 def run_one(case: Case, config: ModelConfig, attempt: int = 1,
-            image: str = "anybench-sandbox:latest", max_steps: int = 30) -> RunRecord:
+            image: str = "anybench-sandbox:latest", max_steps: int = 30,
+            workspace_size: str = "512m", memory: str = "1g") -> RunRecord:
     start = time.monotonic()
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
                        started_at=time.time())
     try:
-        with Sandbox(case, image=image) as sandbox:
+        with Sandbox(case, image=image, workspace_size=workspace_size, memory=memory) as sandbox:
             record.setup_seconds = time.monotonic() - start
             client = ChatClient(config)
             task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
@@ -121,16 +122,18 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
 
 
 def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 2,
-              attempts: int = 1, image: str = "anybench-sandbox:latest",
-              max_steps: int = 30, image_map: dict[str, str] | None = None,
-              on_record: Callable[[RunRecord], None] | None = None) -> list[RunRecord]:
+             attempts: int = 1, image: str = "anybench-sandbox:latest",
+             max_steps: int = 30, image_map: dict[str, str] | None = None,
+             on_record: Callable[[RunRecord], None] | None = None,
+             workspace_size: str = "512m", memory: str = "1g") -> list[RunRecord]:
     if concurrency < 1 or attempts < 1:
         raise ValueError("concurrency and attempts must be positive")
     results: list[RunRecord] = []
     for config in configs:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one, case, config, attempt,
-                                   (image_map or {}).get(case.repository, image), max_steps)
+                                   (image_map or {}).get(case.repository, image), max_steps,
+                                   workspace_size, memory)
                        for case in cases for attempt in range(1, attempts + 1)]
             for future in as_completed(futures):
                 record = future.result()
@@ -142,16 +145,17 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
 
 
 def run_sweep(cases: list[Case], configs: list[ModelConfig],
-              concurrencies: list[int], attempts: int = 1,
-              image: str = "anybench-sandbox:latest", max_steps: int = 30,
-              image_map: dict[str, str] | None = None,
-              on_record: Callable[[RunRecord], None] | None = None) -> list[RunRecord]:
+             concurrencies: list[int], attempts: int = 1,
+             image: str = "anybench-sandbox:latest", max_steps: int = 30,
+             image_map: dict[str, str] | None = None,
+             on_record: Callable[[RunRecord], None] | None = None,
+             workspace_size: str = "512m", memory: str = "1g") -> list[RunRecord]:
     if not concurrencies or any(level < 1 for level in concurrencies):
         raise ValueError("concurrencies must contain positive integers")
     results = []
     for level in concurrencies:
         results.extend(run_cases(cases, configs, level, attempts, image, max_steps,
-                                 image_map, on_record))
+                                 image_map, on_record, workspace_size, memory))
     return results
 
 

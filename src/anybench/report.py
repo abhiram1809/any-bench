@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import median
 
-from .model import RunRecord
+from .model import RunRecord, _private_opener
 
 
 def report(records: list[RunRecord], output: Path) -> None:
@@ -87,7 +87,7 @@ def report(records: list[RunRecord], output: Path) -> None:
         "judge_score": r.judge_score, "tokens": r.prompt_tokens + r.completion_tokens,
         "judge_reason": r.judge_reason, "error": r.error,
     } for r in records]).replace("<", "\\u003c")
-    output.write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+    document = f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <title>AnyBench report</title><style>body{{font:16px system-ui;max-width:1100px;margin:3rem auto;padding:0 1rem;color:#172033}}
 table{{border-collapse:collapse;width:100%}}td,th{{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}}
 svg{{max-width:100%;background:#f8fafc;border:1px solid #ddd}}.muted{{color:#64748b}}</style>
@@ -109,4 +109,6 @@ Efficiency divides speedup by the worker-count increase.</p>
 <h2>Throughput by worker count</h2><svg viewBox="0 0 760 {max(65, len(rows) * 48 + 20)}" role="img" aria-label="Throughput by worker count">{bars}</svg>
 <h2>Attempts</h2><div id="attempts"></div><script>
 const data={data};document.getElementById('attempts').innerHTML='<table><tr><th>Case</th><th>Model</th><th>Workers</th><th>Attempt</th><th>Status</th><th>Seconds</th><th>Test</th><th>Judge</th><th>Reason / error</th></tr>'+data.map(r=>'<tr>'+[r.case,r.model,r.concurrency,r.attempt,r.status,r.seconds,r.test_passed,r.judge_score,r.error||r.judge_reason].map(x=>'<td>'+String(x).replaceAll('&','&amp;').replaceAll('<','&lt;')+'</td>').join('')+'</tr>').join('')+'</table>';
-</script></html>''', encoding="utf-8")
+</script></html>'''
+    with open(output, "w", encoding="utf-8", opener=_private_opener) as stream:
+        stream.write(document)

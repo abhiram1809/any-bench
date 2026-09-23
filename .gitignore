@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.anybench/
+*.csv
 *.jsonl
-report.html
+report*.html
+models.json
+candidate.json

@@ -22,8 +22,8 @@ Tests use `unittest`. Add focused methods named `test_<behavior>` to the relevan
 
 ## Commit & Pull Request Guidelines
 
-This repository has no commits yet, so there is no established message convention. Use short, imperative subjects such as `Validate sandbox test commands`. In pull requests, explain the behavior changed, link an issue when applicable, and list the tests run. Include a report screenshot when changing rendered HTML.
+The initial commit uses a short, imperative subject. Follow that pattern, for example `Validate sandbox test commands`. In pull requests, explain the behavior changed, link an issue when applicable, and list the tests run. Include a report screenshot when changing rendered HTML.
 
 ## Security & Configuration
 
-Pass provider credentials through the environment variable named by `api_key_env` in model configuration; never commit keys. Treat generated CSV datasets and JSONL attempts as potentially containing private repository code. Review generated test commands before running them against a repository.
+Pass provider credentials through the environment variable named by `api_key_env` in model configuration; never commit keys. Keep generated datasets, attempts, and reports under the ignored `.anybench/` directory. They may contain private repository code. Review generated test commands before running them against a repository.

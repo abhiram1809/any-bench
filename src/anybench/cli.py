@@ -11,6 +11,7 @@ from .model import (ModelConfig, append_case, append_jsonl, read_cases, read_jso
                     write_cases, write_jsonl)
 from .report import report
 from .runner import preflight_run, run_sweep
+from .sandbox import validate_size
 
 
 def _configs(path: Path) -> list[ModelConfig]:
@@ -50,6 +51,10 @@ def main(argv: list[str] | None = None) -> None:
                        help="Check each test fails on base and passes on gold in Docker")
     check.add_argument("--image", default="anybench-sandbox:latest")
     check.add_argument("--image-map", type=Path)
+    check.add_argument("--workspace-size", type=validate_size, default="512m",
+                       help="Editable checkout limit (default: 512m)")
+    check.add_argument("--memory", type=validate_size, default="1g",
+                       help="Container memory limit (default: 1g)")
     run = commands.add_parser("run", help="Run cases in isolated containers")
     run.add_argument("dataset", type=Path)
     run.add_argument("--models", type=Path, required=True)
@@ -60,6 +65,10 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--image", default="anybench-sandbox:latest")
     run.add_argument("--image-map", type=Path,
                      help="JSON object mapping dataset repository values to Docker images")
+    run.add_argument("--workspace-size", type=validate_size, default="512m",
+                     help="Editable checkout limit (default: 512m)")
+    run.add_argument("--memory", type=validate_size, default="1g",
+                     help="Container memory limit (default: 1g)")
     run.add_argument("--max-steps", type=int, default=30)
     run.add_argument("--output", type=Path, required=True)
     score = commands.add_parser("evaluate", help="Judge patches and preserve test results")
@@ -85,7 +94,8 @@ def main(argv: list[str] | None = None) -> None:
         errors = validate_dataset(cases)
         if args.check_tests and not errors:
             image_map = _image_map(args.image_map)
-            errors.extend(validate_test_commands(cases, args.image, image_map))
+            errors.extend(validate_test_commands(cases, args.image, image_map,
+                                                 args.workspace_size, args.memory))
         if errors:
             parser.exit(1, "\n".join(errors) + "\n")
         print(f"Validated {len(cases)} cases")
@@ -109,7 +119,8 @@ def main(argv: list[str] | None = None) -> None:
         write_jsonl(args.output, [])
         records = run_sweep(cases, configs, levels,
                             args.attempts, args.image, args.max_steps, image_map,
-                            lambda record: append_jsonl(args.output, record))
+                            lambda record: append_jsonl(args.output, record),
+                            args.workspace_size, args.memory)
         print(f"Wrote {len(records)} attempts to {args.output}")
     elif args.command == "evaluate":
         configs = _configs(args.models) if args.models else []
