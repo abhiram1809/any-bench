@@ -130,7 +130,7 @@ class Sandbox:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Docker failed: {started.stderr.strip()}")
         self.container = started.stdout.strip()
-        copied = _run(["docker", "exec", self.container, "cp", "-a", "/seed/.", "/repo/"])
+        copied = _run(["docker", "exec", self.container, "cp", "-R", "/seed/.", "/repo/"])
         if copied.returncode:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Could not copy snapshot into bounded workspace: {copied.stderr.strip()}")
