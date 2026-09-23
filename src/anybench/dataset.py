@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import tempfile
+from contextlib import ExitStack, contextmanager
+from pathlib import Path
+from typing import Callable
+
+from .llm import ChatClient, parse_json_object
+from .model import Case
+
+
+def git(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                            text=True, check=True)
+    return result.stdout
+
+
+BUILDER_TOOLS = [
+    {"type": "function", "function": {"name": "ReadRevision",
+     "description": "Read a file at the parent or target commit for task context.",
+     "parameters": {"type": "object", "properties": {
+         "revision": {"type": "string", "enum": ["parent", "target"]},
+         "file_path": {"type": "string"}}, "required": ["revision", "file_path"]}}},
+    {"type": "function", "function": {"name": "RecentCommits",
+     "description": "Read nearby historical commit messages.",
+     "parameters": {"type": "object", "properties": {}, "required": []}}},
+]
+
+
+def analyze_commit(client: ChatClient, repo: Path, parent: str, commit: str,
+                   prompt: str) -> dict:
+    messages = [{"role": "user", "content": prompt}]
+    for _ in range(8):
+        reply = client.complete(messages, BUILDER_TOOLS)
+        message = reply.message
+        messages.append(message)
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            raw = message.get("content") or ""
+            return parse_json_object(raw)
+        for call in tool_calls:
+            try:
+                arguments = json.loads(call["function"]["arguments"])
+                name = call["function"]["name"]
+                if name == "ReadRevision":
+                    revision = {"parent": parent, "target": commit}[arguments["revision"]]
+                    path = arguments["file_path"]
+                    if path.startswith("/") or ".." in Path(path).parts:
+                        raise ValueError("Invalid repository path")
+                    output = git(repo, "show", f"{revision}:{path}")[:20000]
+                elif name == "RecentCommits":
+                    output = git(repo, "log", "-10", "--format=%h %s", commit)[:5000]
+                else:
+                    raise ValueError(f"Unknown builder tool: {name}")
+            except (ValueError, KeyError, subprocess.CalledProcessError) as exc:
+                output = f"Tool error: {exc}"
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+    raise ValueError(f"Dataset agent exceeded step limit for {commit}")
+
+
+@contextmanager
+def _repository(spec: str):
+    local = Path(spec).expanduser()
+    if local.exists():
+        yield local.resolve(strict=True)
+    elif spec.startswith(("https://", "ssh://", "git@")):
+        with tempfile.TemporaryDirectory(prefix="anybench-build-") as temp:
+            checkout = Path(temp) / "repo"
+            subprocess.run(["git", "clone", "--quiet", "--", spec, str(checkout)],
+                           check=True, capture_output=True, text=True)
+            yield checkout
+    else:
+        raise ValueError(f"Repository is not a local path or supported Git URL: {spec}")
+
+
+def build_dataset(repositories: list[str | Path], client: ChatClient, commits: int = 50,
+                  max_cases: int | None = None, existing_cases: list[Case] | None = None,
+                  on_case: Callable[[Case], None] | None = None) -> list[Case]:
+    if commits < 1 or max_cases is not None and max_cases < 1:
+        raise ValueError("commits and max_cases must be positive")
+    cases: list[Case] = list(existing_cases or [])
+    seen = {(case.repository, case.target_commit) for case in cases}
+    if max_cases is not None and len(cases) >= max_cases:
+        return cases
+    with ExitStack() as stack:
+        sources: list[tuple[Path, str, str, list[str]]] = []
+        for spec in repositories:
+            repo = stack.enter_context(_repository(str(spec)))
+            source = str(repo.resolve()) if Path(str(spec)).expanduser().exists() else str(spec)
+            identifier = hashlib.sha256(source.encode()).hexdigest()[:8]
+            git(repo, "rev-parse", "--is-inside-work-tree")
+            revisions = git(repo, "log", f"-{commits}", "--first-parent", "--format=%H").splitlines()
+            sources.append((repo, source, identifier, revisions))
+        for index in range(max((len(item[3]) for item in sources), default=0)):
+            for repo, source, identifier, revisions in sources:
+                if index >= len(revisions) or (source, revisions[index]) in seen:
+                    continue
+                case = _case_from_commit(client, repo, source, identifier, revisions[index])
+                if case is None:
+                    continue
+                cases.append(case)
+                seen.add((source, case.target_commit))
+                if on_case:
+                    on_case(case)
+                if max_cases is not None and len(cases) >= max_cases:
+                    return cases
+    return cases
+
+
+def _case_from_commit(client: ChatClient, repo: Path, source: str,
+                      identifier: str, commit: str) -> Case | None:
+    parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
+    if len(parents) != 2:  # merge commits and root commits are ambiguous cases
+        return None
+    parent = parents[1]
+    diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--")
+    if not diff.strip():
+        return None
+    # The original diff remains exact in the CSV. The model gets a bounded excerpt.
+    context = git(repo, "show", "-s", "--format=%B", commit)
+    changed = git(repo, "diff", "--name-only", parent, commit, "--")
+    prompt = (
+        "Create a coding benchmark task from this historical commit. Infer only facts "
+        "supported by the message and patch. Return one JSON object with keys "
+        "eligible (boolean), problem_statement, hint, test_command, "
+        "external_validation (boolean), external_validation_reason. Set eligible=false "
+        "for documentation-only, formatting-only, or otherwise unsuitable commits. "
+        "For eligible commits, the problem statement must describe the requested "
+        "behavior without revealing the solution. Use an empty test_command when no "
+        "safe, repository-local check can be inferred. A test_command must run on both "
+        "the parent and target snapshots without depending on files introduced only "
+        "by the target. It should fail on the parent and pass on the target. "
+        "Mark external_validation true "
+        "for cases needing services or conditions unavailable in a local sandbox.\n\n"
+        f"Commit message:\n{context[:8000]}\nChanged files:\n{changed[:8000]}\n"
+        f"Patch:\n{diff[:60000]}"
+    )
+    data = analyze_commit(client, repo, parent, commit, prompt)
+    if data.get("eligible") is False:
+        return None
+    if "eligible" in data and data["eligible"] is not True:
+        raise ValueError(f"Model returned a non-boolean eligible for {commit}")
+    for key in ("problem_statement", "hint", "test_command",
+                "external_validation", "external_validation_reason"):
+        if key not in data:
+            raise ValueError(f"Model omitted {key} for {commit}")
+    if not isinstance(data["external_validation"], bool):
+        raise ValueError(f"Model returned a non-boolean external_validation for {commit}")
+    if not isinstance(data["problem_statement"], str) or not data["problem_statement"].strip():
+        raise ValueError(f"Model returned an empty problem statement for {commit}")
+    return Case(
+        case_id=f"{repo.name}-{identifier}-{commit[:12]}", repository=source,
+        base_commit=parent, target_commit=commit,
+        problem_statement=str(data["problem_statement"]), hint=str(data["hint"]),
+        gold_diff=diff, test_command=str(data["test_command"]),
+        external_validation=data["external_validation"],
+        external_validation_reason=str(data["external_validation_reason"]),
+    )
+
+
+def validate_dataset(cases: list[Case]) -> list[str]:
+    """Check that every reference patch and base commit match its repository."""
+    errors: list[str] = []
+    seen = set()
+    repositories: dict[str, list[Case]] = {}
+    for case in cases:
+        if case.case_id in seen:
+            errors.append(f"{case.case_id}: duplicate case ID")
+        seen.add(case.case_id)
+        if not case.problem_statement.strip():
+            errors.append(f"{case.case_id}: empty problem statement")
+        repositories.setdefault(case.repository, []).append(case)
+    for spec, subset in repositories.items():
+        try:
+            with _repository(spec) as repo:
+                for case in subset:
+                    try:
+                        parents = git(repo, "rev-list", "--parents", "-n", "1",
+                                      case.target_commit).split()
+                        if len(parents) != 2 or parents[1] != case.base_commit:
+                            errors.append(f"{case.case_id}: base is not target's sole parent")
+                            continue
+                        diff = git(repo, "diff", "--no-ext-diff", "--find-renames",
+                                   case.base_commit, case.target_commit, "--")
+                        if diff != case.gold_diff:
+                            errors.append(f"{case.case_id}: gold diff does not match commits")
+                    except subprocess.CalledProcessError as exc:
+                        errors.append(f"{case.case_id}: Git error: {exc}")
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            errors.append(f"{spec}: repository unavailable: {exc}")
+    return errors

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "any-bench"
+version = "0.1.0"
+description = "Build private repository coding benchmarks and run them in Docker"
+requires-python = ">=3.11"
+
+[project.scripts]
+anybench = "anybench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
