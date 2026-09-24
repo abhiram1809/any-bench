@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import ipaddress
+import math
 import json
 import re
 import sys
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -29,16 +32,21 @@ FIELDS = list(Case.__dataclass_fields__)
 
 def write_cases(path: Path, cases: list[Case]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8", opener=_private_opener) as out:
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    with os.fdopen(descriptor, "w", newline="", encoding="utf-8") as out:
         writer = csv.DictWriter(out, FIELDS)
         writer.writeheader()
         for case in cases:
             writer.writerow(asdict(case))
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(name, path)
+    from .metadata import write_metadata
+    write_metadata(cases, path)
 
 
 def append_case(path: Path, case: Case) -> None:
-    with open(path, "a", newline="", encoding="utf-8", opener=_private_opener) as out:
-        csv.DictWriter(out, FIELDS).writerow(asdict(case))
+    write_cases(path, [*read_cases(path), case])
 
 
 def read_cases(path: Path) -> list[Case]:
@@ -60,6 +68,8 @@ def read_cases(path: Path) -> list[Case]:
             raise ValueError(f"Invalid external_validation value in {path}: {flag}")
         row["external_validation"] = flag == "true"
         cases.append(Case(**row))
+    from .metadata import attach_metadata
+    attach_metadata(cases, path)
     return cases
 
 
@@ -83,8 +93,26 @@ class ModelConfig:
     context_profile: str = "enhanced"
     context_window_tokens: int = 200_000
     role: str = "candidate"
+    provider_concurrency: int | None = None
+    max_total_tokens: int | None = None
+    attempt_timeout: int | None = None
 
     def __post_init__(self) -> None:
+        if type(self.temperature) not in (int, float) or not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2:
+            raise ValueError("temperature must be finite and between 0 and 2")
+        for name in ("max_output_tokens", "max_retries", "harness_timeout", "context_window_tokens"):
+            if type(getattr(self, name)) is not int:
+                raise ValueError(f"{name} must be an integer")
+        if self.harness != "anybench" and self.temperature != 0:
+            raise ValueError("External harness adapters do not support temperature overrides")
+        if self.harness == "opencode" and self.base_url:
+            raise ValueError("Configure OpenCode endpoints inside its image; base_url is unsupported")
+        for name in ("provider_concurrency", "max_total_tokens", "attempt_timeout"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"{name} must be a positive integer")
+        if self.harness != "anybench" and self.max_total_tokens is not None:
+            raise ValueError("External harnesses cannot enforce max_total_tokens")
         if not self.name or not self.model:
             raise ValueError("name and model are required")
         if self.role not in {"candidate", "builder", "judge"}:
@@ -147,7 +175,7 @@ class ModelConfig:
                 local = host == "localhost"
             if not local:
                 raise ValueError("base_url must use HTTPS except for loopback endpoints")
-        if not self.api_key_env and self.harness == "anybench":
+        if not self.api_key_env and self.harness == "anybench" and endpoint.scheme != "http":
             raise ValueError("api_key_env is required")
 
 
@@ -201,9 +229,8 @@ def write_jsonl(path: Path, records: list[RunRecord]) -> None:
 
 
 def append_jsonl(path: Path, record: RunRecord) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", opener=_private_opener) as out:
-        out.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+    from .workflow import append_dict_jsonl
+    append_dict_jsonl(path, asdict(record))
 
 
 def read_jsonl(path: Path) -> list[RunRecord]:

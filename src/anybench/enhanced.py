@@ -9,7 +9,7 @@ import uuid
 
 from .context import (Artifacts, BudgetExhausted, Context, ContextExhausted,
                       Instructions)
-from .llm import ChatClient, ContextLimitError, Reply
+from .llm import ChatClient, ContextLimitError, LimitExceeded, Reply
 from .model import ModelConfig, _private_opener
 from .sandbox import Sandbox, ToolError
 
@@ -236,6 +236,8 @@ def enhanced_loop(client: ChatClient, sandbox: Sandbox, problem: str, config: Mo
         attempt.result.stop_reason = 'completed'
     except BudgetExhausted as exc:
         attempt.result.stop_reason, attempt.result.error = 'step_limit', str(exc)
+    except LimitExceeded as exc:
+        attempt.result.stop_reason, attempt.result.error = exc.reason, str(exc)
     except (ContextExhausted, ContextLimitError) as exc:
         attempt.result.stop_reason, attempt.result.error = 'context_limit', str(exc)
     except Exception as exc:

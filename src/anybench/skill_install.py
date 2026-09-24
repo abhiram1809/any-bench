@@ -9,6 +9,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from .workflow import private_json
+from . import __version__
 
 
 def source_skill() -> Path:
@@ -46,7 +47,7 @@ def install_skill(agent: str, scope: str, project: Path | None = None,
         staged = Path(temporary) / "anybench"
         shutil.copytree(source, staged)
         private_json(staged / ".anybench-install.json",
-                     {"version": "0.2.0", "digest": source_hash})
+                     {"version": __version__, "digest": source_hash})
         backup = Path(temporary) / "previous"
         if destination.exists():
             destination.rename(backup)

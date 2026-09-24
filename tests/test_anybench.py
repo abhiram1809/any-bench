@@ -22,7 +22,7 @@ from anybench.llm import ChatClient, Reply, parse_json_object
 from anybench.model import (Case, ModelConfig, RunRecord, append_jsonl,
                             append_case, read_cases, read_jsonl, write_cases, write_jsonl)
 from anybench.report import report
-from anybench.runner import agent_loop, preflight_run, run_cases, run_one, run_sweep
+from anybench.runner import agent_loop, preflight_run, run_one, run_sweep
 from anybench.sandbox import Sandbox, ToolError, _extract_checkout, _limited_run, prepare_snapshot
 
 
@@ -80,7 +80,7 @@ class DatasetTests(unittest.TestCase):
                             '"external_validation":false,"external_validation_reason":""}'})
             result = analyze_commit(client, repo, base, target, "Analyze")
             self.assertEqual(result["problem_statement"], "Fix")
-            self.assertEqual(client.calls[1][0][-1]["content"], "value = 1\n")
+            self.assertIn("value = 1\n", client.calls[1][0][-1]["content"])
 
     def test_build_and_csv_round_trip(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -700,14 +700,14 @@ class EvaluationReportTests(unittest.TestCase):
         case = Case("c", "/tmp/repo", "base", "gold", "Fix", "", "",
                     test_command="check")
         class FakeSandbox:
-            def __init__(self, case, image, workspace_size, memory):
+            def __init__(self, case, image, workspace_size, memory, **kwargs):
                 self.case = case
             def __enter__(self):
                 return self
             def __exit__(self, *args):
                 return None
-            def test(self, command):
-                return True, "passed"
+            def command(self, argv, timeout=120):
+                return subprocess.CompletedProcess(argv, 0, "Ran 1 test\nOK", "")
         with patch("anybench.evaluate.Sandbox", FakeSandbox):
             errors = validate_test_commands([case])
         self.assertIn("test also passes before", errors[0])
@@ -748,7 +748,7 @@ class EvaluationReportTests(unittest.TestCase):
             output = path.read_text()
             self.assertIn("1800.0", output)
             self.assertIn("3600.0", output)
-            self.assertIn("Quadrants split", output)
+            self.assertIn("Each point shows local test success", output)
             self.assertIn("Output tokens/s", output)
             self.assertIn("2.00×", output)
             self.assertIn("Efficiency", output)
@@ -775,12 +775,12 @@ class PipelineTests(unittest.TestCase):
                 self._tmp = tempfile.TemporaryDirectory()
                 self.root = Path(self._tmp.name) / "repo"
                 prepare_snapshot(self.case.repository, self.case.base_commit, self.root)
+                if self.evaluation_patch is not None:
+                    self.prepare_evaluation()
                 return self
 
-            def test(self, command, timeout=120):
-                result = subprocess.run(["sh", "-lc", command], cwd=self.root,
-                                        capture_output=True, text=True, timeout=timeout)
-                return result.returncode == 0, result.stdout + result.stderr
+            def command(self, argv, timeout=120):
+                return subprocess.run(argv, cwd=self.root, capture_output=True, text=True, timeout=timeout)
 
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "project"
@@ -805,6 +805,7 @@ class PipelineTests(unittest.TestCase):
             config = ModelConfig("candidate", "https://example.test/v1", "model", "KEY",
                                  context_profile="legacy")
             with patch("anybench.runner.Sandbox", LocalSandbox), \
+                 patch("anybench.evaluate.Sandbox", LocalSandbox), \
                  patch("anybench.runner.ChatClient", return_value=candidate):
                 record = run_one(case, config)
             self.assertEqual(record.status, "completed", record.error)

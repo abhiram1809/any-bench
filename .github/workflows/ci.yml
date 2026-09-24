@@ -5,7 +5,30 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff check src tests
+      - run: mypy
+      - run: python -m unittest discover -s tests -v
+      - run: python -m build --wheel
+      - name: Installed wheel and portable skill smoke test
+        run: |
+          python -m venv /tmp/anybench-wheel
+          /tmp/anybench-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/anybench-wheel/bin/anybench --help
+          /tmp/anybench-wheel/bin/anybench skill install --agent portable --scope project --project /tmp/anybench-smoke
+          test -f /tmp/anybench-smoke/.agents/skills/anybench/SKILL.md
+  docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

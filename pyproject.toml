@@ -4,9 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any-bench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Build private repository coding benchmarks and run them in Docker"
 requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["build>=1.2", "ruff>=0.9", "mypy>=1.14"]
 
 [project.scripts]
 anybench = "anybench.cli:main"
@@ -16,3 +19,15 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/anybench/outcomes.py", "src/anybench/repository.py", "src/anybench/metrics.py"]
+follow_imports = "silent"
+check_untyped_defs = true

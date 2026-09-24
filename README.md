@@ -20,19 +20,19 @@ anybench doctor --json --models .anybench/session/candidates.json --output-dir .
 anybench prepare /path/to/repo --commits 50 --output .anybench/session/contexts.jsonl
 # The host agent reviews contexts and writes annotations.jsonl.
 anybench import .anybench/session/contexts.jsonl .anybench/session/annotations.jsonl --output .anybench/session/cases.csv
-anybench validate .anybench/session/cases.csv --check-tests --json-output .anybench/session/validation.json --verified-output .anybench/session/verified.csv
+anybench validate .anybench/session/cases.csv --check-tests --json-output .anybench/session/validation.json --verified-output .anybench/session/verified.csv --max-verified 5
 anybench run .anybench/session/verified.csv --models .anybench/session/candidates.json --artifact-dir .anybench/session/artifacts --output .anybench/session/attempts.jsonl
 anybench summary .anybench/session/attempts.jsonl --dataset .anybench/session/verified.csv --json
 anybench report .anybench/session/attempts.jsonl --output .anybench/session/report.html
 ```
 
-Each annotation names `case_id`, `eligible`, `problem_statement`, `hint`, `test_command`, `external_validation`, and `external_validation_reason`. A rejected commit needs only `case_id`, `eligible:false`, and an optional `reason`. Base commits and reference patches come from Git; annotations cannot override them. Review commands before `validate --check-tests`, which runs them in network-disabled Docker on parent and target snapshots. The JSON validation file marks every case `verified`, `invalid`, or `skipped` with a reason; only verified cases enter `verified.csv`. Tasks with no usable local test are kept visible as skipped. These are private historical tasks, not the official SWE-bench dataset schema or test patch format.
+Each annotation names `case_id`, `eligible`, `problem_statement`, `hint`, `test_command`, `external_validation`, and `external_validation_reason`. A rejected commit needs only `case_id`, `eligible:false`, and an optional `reason`. Base commits and reference patches come from Git; annotations cannot override them. Review commands before `validate --check-tests`, which runs them in network-disabled Docker on the base snapshot and the reconstructed reference solution. The JSON validation file marks every case `verified`, `invalid`, or `skipped` with a reason; only verified cases enter `verified.csv`. Tasks with no usable local test are kept visible as skipped. These are private historical tasks, not the official SWE-bench dataset schema or test patch format.
 
 `run --resume`, `evaluate --resume`, and `build --resume` use frozen input manifests. They skip recorded attempts and judge outcomes, including errors, so resuming does not silently repay failed calls. A changed dataset, model configuration, image ID, or budget is rejected. Start a new output path or use `--overwrite` for a deliberate rerun. Keep separate model JSON files for candidate, optional API builder, and optional judge roles. Set `"role":"candidate"`, `"role":"builder"`, or `"role":"judge"` in new entries; `run` refuses entries marked builder or judge. Omitted roles remain candidate for old configs. `doctor` checks named credential variables without printing their values or calling a model. `summary` separates completed, failed, exhausted, locally passed, and unscored attempts; CLI success is not a claim of benchmark accuracy.
 
 ## 1. Install and prepare Docker
 
-You need Python 3.11+, Git, and a working Docker daemon. From this repository:
+You need Python 3.11+, Git, a POSIX host, and a working Docker daemon. From this repository:
 
 ```sh
 python3 -m venv .venv
@@ -202,3 +202,209 @@ Containers have dropped capabilities, a read-only root filesystem, and CPU, memo
 ## Development
 
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -v`. The Docker integration test skips when the daemon or image is unavailable. To require it, run `ANYBENCH_REQUIRE_DOCKER=1 PYTHONPATH=src python3 -m unittest discover -s tests -v` after building the image.
+
+
+## Multi-commit bug reconstruction (opt-in pilot)
+
+A bug can require an initial fix and several follow-up corrections. `--grouped`
+creates one task from selected historical fixes, even when unrelated commits lie
+between them. It replays the selected changes onto the snapshot preceding the
+first fix. Conflicts and missing dependencies are retained as review decisions;
+AnyBench does not resolve them by importing unrelated work.
+
+Both host-agent and API authoring use the same reconstruction and verification
+pipeline. The existing single-commit workflow remains available.
+
+```sh
+anybench prepare /path/to/repo --grouped --commits 50 --output .anybench/history.jsonl
+# Write one proposal per JSONL line using the format below.
+anybench import .anybench/history.jsonl .anybench/groups.jsonl --grouped --output .anybench/grouped.csv
+anybench validate .anybench/grouped.csv --check-tests --verified-output .anybench/verified.csv
+anybench inspect .anybench/grouped.csv
+```
+
+A proposal has the following shape. Use full commit IDs from the exported history
+and an exact exported repository identifier:
+
+```json
+{
+  "repository": "/path/to/repo",
+  "selected_commits": ["FIRST_FIX_SHA", "FOLLOWUP_FIX_SHA"],
+  "evidence": [
+    {"commit": "FIRST_FIX_SHA", "paths": ["app.py"], "reason": "Initial correction for the same documented bug."},
+    {"commit": "FOLLOWUP_FIX_SHA", "paths": ["app.py"], "reason": "Completes the missing case from the initial correction."}
+  ],
+  "problem_statement": "Normalize surrounding whitespace and case.",
+  "evaluation_files": {
+    "test_bug.py": "import unittest\nfrom app import clean\nclass Bug(unittest.TestCase):\n    def test_normalization(self): self.assertEqual(clean(' Hello '), 'hello')\nif __name__ == '__main__': unittest.main()\n"
+  },
+  "evaluation_command": "python /evaluation/test_bug.py",
+  "regression_command": "python -m unittest discover -s tests",
+  "test_provenance": "host-authored independent regression"
+}
+```
+
+Evaluation files mount read-only at `/evaluation`. The repository is `/repo`, also
+read-only during evaluation; temporary files belong in `/tmp`. Python receives
+`PYTHONPATH=/repo`. Node tests can use `node --test /evaluation/task.test.cjs` and
+load code from `/repo`. Existing test files are restored from the base before
+scoring, so editing those files in a candidate patch does not change the test oracle.
+Additional authoritative repository paths can be listed as `protected_paths` in
+case metadata.
+
+For API authoring:
+
+```sh
+anybench build /path/to/repo --grouped --models .anybench/builder.json --builder builder \
+  --commits 50 --image anybench-sandbox:latest --output .anybench/grouped.csv
+```
+
+The builder records grouping evidence against real changed paths, inspects
+bounded patch/file ranges, and authors independent tests in a separate request
+that exposes only the problem and base interfaces. Every accepted group must
+reconstruct reproducibly. The regression must fail through an actual assertion
+on the base and pass on the reference; unchanged regression checks must pass on
+both. Grouped tasks repeat these checks three times in fresh containers. A flaky,
+unexecutable, or incompletely reconstructed task is excluded from verified output.
+`run` refuses grouped tasks whose saved verification is absent or stale.
+
+`prepare` and `build` accept `--revision`, `--since`, `--until`, `--paths`,
+`--max-patch-bytes` (default 500,000), and `--seed`. Grouped discovery includes
+merge commits as their first-parent change and prevents overlap with already
+selected constituent changes. It scans only the frozen window; it never silently
+widens the search. For datasets spanning repositories, `split` uses seeded
+repository-level partitions so related histories stay together:
+
+```sh
+anybench split .anybench/cases.csv --seed 42 --train-fraction 0.8 --output .anybench/splits
+```
+
+CSV columns and attempt JSONL fields have not changed. Rich task metadata lives
+in `cases.csv.metadata.json`; keep that file with a grouped dataset. Its metadata
+contains replay order, tree hash, evaluation assets, and verification evidence.
+`target_commit` identifies the final selected historical fix; `gold_diff` is the
+focused reconstructed patch, which may differ from the complete historical range.
+Old single-commit CSVs remain readable without a sidecar.
+
+## Experiment configuration and recovery
+
+Optional TOML defaults are resolved relative to the configuration file. Explicit
+CLI flags override them. Existing model JSON files remain the endpoint source.
+
+```toml
+[run]
+dataset = "verified.csv"
+models = "candidates.json"
+output = "attempts.jsonl"
+concurrency = 2
+attempts = 3
+max_steps = 30
+```
+
+```sh
+anybench run --config .anybench/experiment.toml --concurrency 4
+```
+
+A repository alias JSON file maps the dataset's original repository value to a
+new local checkout. Pass it with `--repo-map` to `validate` or `run`; case identity
+stays stable. `--environment-profiles` accepts per-repository entries such as:
+
+```json
+{
+  "/original/project": {
+    "image": "project-tests:latest",
+    "adapter": "python",
+    "setup_check": "python -c 'import required_dependency'",
+    "test_command": "python -m unittest discover -s tests"
+  }
+}
+```
+
+Adapters recognize Python unittest/pytest and Node test summaries. A custom check
+can emit `ANYBENCH_RESULT {"tests": 3}` and return zero for success or one for a
+regression failure. Missing files/dependencies, zero collected tests, timeouts,
+and resource exhaustion do not establish a valid base regression. Simple explicit
+assertion commands are also supported. Unsupported/unrecognized checks remain
+unverified rather than being accepted merely because they return zero.
+
+Model entries optionally accept `provider_concurrency`, `max_total_tokens`, and
+`attempt_timeout`. Token limits apply to the built-in harness and stop further
+model calls once recorded usage reaches the limit; an in-flight response can
+exceed the remaining allowance. Time limits bound model requests and external
+harness execution. External harnesses reject token limits they cannot enforce.
+Loopback HTTP endpoints may omit an API key. External adapters reject unsupported
+temperature overrides instead of silently ignoring them.
+
+Run manifests freeze resolved configuration, source/version identity, evaluation
+metadata, and Docker image IDs, including the egress proxy. Execution uses those
+IDs. A bounded scheduler queues only active work, honors provider concurrency,
+and writes progress events beside the results. Snapshot caches contain private
+source code under `.anybench/cache/snapshots`; set `ANYBENCH_CACHE_DIR` to relocate
+them or `ANYBENCH_NO_CACHE=1` to disable caching. Each attempt receives its own copy.
+
+Output locks prevent concurrent writers. Resume explicitly repairs a torn final
+JSONL record and rejects corruption in completed lines. Ordinary reads never
+repair files. Recorded builder errors are not repaid on resume. An interrupted
+builder call with unknown billing state requires a deliberate new output path.
+
+Retry failed candidate attempts into a new, linked experiment:
+
+```sh
+anybench retry .anybench/attempts.jsonl --status error exhausted --output .anybench/retries.jsonl
+```
+
+Original outcomes remain intact. Retry records retain their original case,
+model, worker-count, and attempt identities; do not concatenate them into the
+original JSONL, which would introduce duplicates.
+
+## Reports and regression comparisons
+
+Reports use the same calculations as JSON summaries. They separate execution
+success, local test success, model judging, coverage, and missing usage. The
+previous combined score remains labeled **Legacy combined accuracy**. Throughput
+uses the union of active attempt intervals, excluding resume downtime. Repeated
+attempt statistics include solve-within-first-k, per-case consistency, and
+confidence intervals that resample cases. Fewer than two cases yields no interval.
+
+```sh
+anybench report .anybench/attempts.jsonl --output .anybench/report.html \
+  --metrics-output .anybench/metrics.json
+anybench report .anybench/attempts.jsonl --aggregate-only --output .anybench/share.html
+anybench report .anybench/attempts.jsonl --include-private --output .anybench/debug.html
+anybench compare .anybench/baseline.jsonl .anybench/candidate.jsonl \
+  --max-regressions 0 --max-accuracy-drop 0.02 --output .anybench/comparison.json
+```
+
+Offline HTML includes searchable/filterable attempts, sortable tables, case
+outcomes, context diagnostics, and an accuracy/throughput plot. Patches, detailed
+traces, paths, and evaluation evidence appear only with `--include-private`.
+Aggregate-only exports omit case identities and attempt details. No CDN or remote
+assets are loaded.
+
+Comparisons require matching frozen datasets and execution settings, one candidate
+and worker count per input, matching attempt identities, and complete runs with
+local test outcomes. They report paired wins/losses and return exit code 1 when
+regression thresholds are exceeded. An unknown or partial experiment does not
+qualify as a finalized comparison.
+
+`--rates` on `summary` or `report` accepts a JSON map from model ID to per-million-
+token prices, for example `{"model-id":{"input":1,"output":2,"cache_read":0.1}}`.
+`cache_write` is optional. Costs remain unknown when required usage is missing;
+these are candidate estimates from your supplied rates, not provider billing.
+
+## Verification for contributors
+
+```sh
+python -m pip install -e '.[dev]'
+ruff check src tests
+mypy
+PYTHONPATH=src python -m unittest discover -s tests -v
+python -m build --wheel
+```
+
+CI runs Python 3.11–3.14, checks wheel/skill installation from an unrelated working
+directory, and separately requires real Docker integration. Unit fixtures exercise
+multi-commit replay, missing-test rejection, candidate Git metadata isolation,
+immutable test restoration, Python and Node tests, resume recovery, and shared
+report calculations. Docker integration remains necessary to verify actual
+container permissions and network/process isolation.

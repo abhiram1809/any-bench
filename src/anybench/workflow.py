@@ -4,6 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import fcntl
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -41,12 +45,14 @@ def ensure_private_parent(path: Path) -> None:
 
 def private_json(path: Path, value: Any) -> None:
     ensure_private_parent(path)
-    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -79,8 +85,8 @@ def record_key(record: Any) -> tuple[str, str, int, int]:
     return (record.case_id, record.model, record.concurrency, record.attempt)
 
 
-def read_complete_jsonl(path: Path, make: Any) -> list[Any]:
-    """Ignore only a torn final line; fail on corruption within completed lines."""
+def read_complete_jsonl(path: Path, make: Any, *, repair: bool = False) -> list[Any]:
+    """Read complete records; repair a torn final line only with explicit permission."""
     raw = path.read_bytes()
     lines = raw.splitlines(keepends=True)
     values = []
@@ -91,12 +97,15 @@ def read_complete_jsonl(path: Path, make: Any) -> list[Any]:
             try:
                 parsed = json.loads(line)
             except json.JSONDecodeError:
+                if not repair:
+                    raise ValueError(f"Torn final JSONL record in {path}; resume to repair")
                 with path.open("r+b") as stream:
                     stream.truncate(len(raw) - len(line))
             else:
                 values.append(make(parsed))
-                with path.open("ab") as stream:
-                    stream.write(b"\n")
+                if repair:
+                    with path.open("ab") as stream:
+                        stream.write(b"\n")
             break
         values.append(make(json.loads(line)))
     return values
@@ -108,3 +117,32 @@ def append_dict_jsonl(path: Path, value: dict) -> None:
     os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         stream.write(json.dumps(value, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+@contextmanager
+def output_lock(output: Path, wait_seconds: float = 0):
+    """A stable lock inode prevents concurrent invocations from interleaving writes."""
+    ensure_private_parent(output)
+    path = output.with_name(output.name + ".lock")
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise ValueError(f"Output is locked by another AnyBench process: {output}") from exc
+                time.sleep(.05)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def reserved_paths(output: Path) -> set[Path]:
+    return {output.resolve(), *(output.with_name(output.name + suffix).resolve() for suffix in
+                               (".manifest.json", ".metadata.json", ".events.jsonl", ".journal.jsonl",
+                                ".decisions.json", ".proposals.json", ".contexts.json", ".validation.json", ".lock"))}

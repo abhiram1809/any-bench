@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -10,7 +9,8 @@ from .dataset import _repository, case_from_annotation, git
 from .model import Case
 
 
-def commit_contexts(repositories: list[str], limit: int = 50) -> list[dict]:
+def commit_contexts(repositories: list[str], limit: int = 50, *, revisions: dict | None = None,
+                    max_patch_bytes: int = 500_000, seed: int = 0) -> list[dict]:
     if limit < 1:
         raise ValueError("commits must be positive")
     contexts = []
@@ -19,13 +19,16 @@ def commit_contexts(repositories: list[str], limit: int = 50) -> list[dict]:
             repo = stack.enter_context(_repository(spec))
             source = str(repo.resolve()) if Path(spec).expanduser().exists() else spec
             identifier = hashlib.sha256(source.encode()).hexdigest()[:8]
-            for commit in git(repo, "log", f"-{limit}", "--first-parent", "--format=%H").splitlines():
+            for commit in (revisions[source] if revisions is not None else
+                           git(repo, "log", f"-{limit}", "--first-parent", "--format=%H").splitlines()):
                 parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
                 if len(parents) != 2:
                     continue
                 parent = parents[1]
                 diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--")
                 if not diff.strip():
+                    continue
+                if len(diff.encode()) > max_patch_bytes:
                     continue
                 contexts.append({"case_id": f"{repo.name}-{identifier}-{commit[:12]}",
                                  "repository": source, "base_commit": parent,
@@ -34,6 +37,7 @@ def commit_contexts(repositories: list[str], limit: int = 50) -> list[dict]:
                                  "changed_files": git(repo, "diff", "--name-only", parent, commit, "--").splitlines(),
                                  "patch_excerpt": diff[:60000],
                                  "patch_excerpt_truncated": len(diff) > 60000})
+                contexts[-1]["selection_seed"] = seed
     return contexts
 
 

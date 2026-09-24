@@ -144,11 +144,11 @@ class WorkflowTests(unittest.TestCase):
     def test_resume_jsonl_keeps_complete_unterminated_record(self):
         path = self.root / "records.jsonl"
         path.write_text('{"id":1}\n{"id":2}')
-        self.assertEqual([item["id"] for item in read_complete_jsonl(path, lambda x: x)],
+        self.assertEqual([item["id"] for item in read_complete_jsonl(path, lambda x: x, repair=True)],
                          [1, 2])
         self.assertTrue(path.read_bytes().endswith(b"\n"))
         path.write_text('{"id":1}\n{"id":')
-        self.assertEqual([item["id"] for item in read_complete_jsonl(path, lambda x: x)], [1])
+        self.assertEqual([item["id"] for item in read_complete_jsonl(path, lambda x: x, repair=True)], [1])
 
     def test_evaluate_resume_only_missing_judge_result(self):
         cases = self.root / "cases.csv"
@@ -184,7 +184,7 @@ class WorkflowTests(unittest.TestCase):
              patch("anybench.cli.evaluate", side_effect=AssertionError("should skip")):
             main(argv + ["--resume"])
 
-    def test_build_journal_skips_rejected_commit_after_interruption(self):
+    def test_build_journal_skips_rejections_and_recorded_errors(self):
         (self.repo / "app.py").write_text("value = 3\n")
         commit(self.repo, "Set value to three")
         models = self._models()
@@ -217,8 +217,8 @@ class WorkflowTests(unittest.TestCase):
         with patch.dict(os.environ, {"ANYBENCH_TEST_KEY": "present"}), \
              patch("anybench.cli.ChatClient", return_value=second):
             main(argv + ["--resume"])
-        self.assertEqual(second.calls, 1)
-        self.assertEqual(read_cases(output)[0].target_commit, self.target)
+        self.assertEqual(second.calls, 0)
+        self.assertEqual(read_cases(output), [])
 
     def test_structured_validation_selects_verified_subset(self):
         cases = self.root / "cases.csv"

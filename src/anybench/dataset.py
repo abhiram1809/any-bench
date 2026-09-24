@@ -5,17 +5,14 @@ import json
 import subprocess
 import tempfile
 from contextlib import ExitStack, contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
 from .llm import ChatClient, parse_json_object
 from .model import Case
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
-                            text=True, check=True)
-    return result.stdout
+from .repository import OutputLimitError, git, git_args, git_environment
+from .metadata import case_metadata
 
 
 BUILDER_TOOLS = [
@@ -23,7 +20,12 @@ BUILDER_TOOLS = [
      "description": "Read a file at the parent or target commit for task context.",
      "parameters": {"type": "object", "properties": {
          "revision": {"type": "string", "enum": ["parent", "target"]},
-         "file_path": {"type": "string"}}, "required": ["revision", "file_path"]}}},
+         "file_path": {"type": "string"}, "start": {"type": "integer"},
+         "length": {"type": "integer"}}, "required": ["revision", "file_path"]}}},
+    {"type": "function", "function": {"name": "ReadPatch",
+     "description": "Read a bounded character range of the complete patch.",
+     "parameters": {"type": "object", "properties": {"start": {"type": "integer"},
+                     "length": {"type": "integer"}}, "required": []}}},
     {"type": "function", "function": {"name": "RecentCommits",
      "description": "Read nearby historical commit messages.",
      "parameters": {"type": "object", "properties": {}, "required": []}}},
@@ -50,7 +52,17 @@ def analyze_commit(client: ChatClient, repo: Path, parent: str, commit: str,
                     path = arguments["file_path"]
                     if path.startswith("/") or ".." in Path(path).parts:
                         raise ValueError("Invalid repository path")
-                    output = git(repo, "show", f"{revision}:{path}")[:20000]
+                    full = git(repo, "show", f"{revision}:{path}")
+                    start, length = arguments.get("start", 0), arguments.get("length", 20000)
+                    if type(start) is not int or type(length) is not int or start < 0 or not 1 <= length <= 20000:
+                        raise ValueError("Invalid character range")
+                    output = f"Characters {start}:{start + length} of {len(full)}\n" + full[start:start + length]
+                elif name == "ReadPatch":
+                    full = git(repo, "diff", "--no-ext-diff", "--no-textconv", parent, commit, "--")
+                    start, length = arguments.get("start", 0), arguments.get("length", 20000)
+                    if type(start) is not int or type(length) is not int or start < 0 or not 1 <= length <= 20000:
+                        raise ValueError("Invalid character range")
+                    output = f"Characters {start}:{start + length} of {len(full)}\n" + full[start:start + length]
                 elif name == "RecentCommits":
                     output = git(repo, "log", "-10", "--format=%h %s", commit)[:5000]
                 else:
@@ -69,8 +81,9 @@ def _repository(spec: str):
     elif spec.startswith(("https://", "ssh://", "git@")):
         with tempfile.TemporaryDirectory(prefix="anybench-build-") as temp:
             checkout = Path(temp) / "repo"
-            subprocess.run(["git", "clone", "--quiet", "--", spec, str(checkout)],
-                           check=True, capture_output=True, text=True)
+            subprocess.run(git_args(None, "clone", "--quiet", "--", spec, str(checkout)),
+                           check=True, capture_output=True, text=True, timeout=120,
+                           env=git_environment())
             yield checkout
     else:
         raise ValueError(f"Repository is not a local path or supported Git URL: {spec}")
@@ -81,7 +94,9 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
                   on_case: Callable[[Case], None] | None = None,
                   on_decision: Callable[[str, str, bool], None] | None = None,
                   completed: set[tuple[str, str]] | None = None,
-                  frozen_revisions: dict[str, list[str]] | None = None) -> list[Case]:
+                  frozen_revisions: dict[str, list[str]] | None = None,
+                  max_patch_bytes: int = 500_000,
+                  on_event: Callable[[dict], None] | None = None) -> list[Case]:
     if commits < 1 or max_cases is not None and max_cases < 1:
         raise ValueError("commits and max_cases must be positive")
     cases: list[Case] = list(existing_cases or [])
@@ -103,7 +118,23 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
                 if (index >= len(revisions) or (source, revisions[index]) in seen or
                         (source, revisions[index]) in (completed or set())):
                     continue
-                case = _case_from_commit(client, repo, source, identifier, revisions[index])
+                before = (getattr(client, "prompt_tokens", 0), getattr(client, "completion_tokens", 0))
+                if on_event:
+                    on_event({"event": "commit_started", "repository": source, "commit": revisions[index]})
+                try:
+                    case = _case_from_commit(client, repo, source, identifier, revisions[index], max_patch_bytes)
+                except Exception as exc:
+                    if on_event:
+                        on_event({"event": "commit_error", "repository": source, "commit": revisions[index],
+                                  "error": str(exc), "prompt_tokens": getattr(client, "prompt_tokens", 0) - before[0],
+                                  "completion_tokens": getattr(client, "completion_tokens", 0) - before[1]})
+                    raise
+                if on_event:
+                    on_event({"event": "commit_completed", "repository": source, "commit": revisions[index],
+                              "accepted": case is not None,
+                              "case": asdict(case) if case is not None else None,
+                              "prompt_tokens": getattr(client, "prompt_tokens", 0) - before[0],
+                              "completion_tokens": getattr(client, "completion_tokens", 0) - before[1]})
                 if case is None:
                     if on_decision:
                         on_decision(source, revisions[index], False)
@@ -120,13 +151,19 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
 
 
 def _case_from_commit(client: ChatClient, repo: Path, source: str,
-                      identifier: str, commit: str) -> Case | None:
+                      identifier: str, commit: str, max_patch_bytes: int = 500_000) -> Case | None:
     parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
     if len(parents) != 2:  # merge commits and root commits are ambiguous cases
         return None
     parent = parents[1]
-    diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--")
+    try:
+        diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--",
+                   max_output_bytes=max_patch_bytes + 1)
+    except OutputLimitError:
+        return None
     if not diff.strip():
+        return None
+    if len(diff.encode()) > max_patch_bytes:
         return None
     # The original diff remains exact in the CSV. The model gets a bounded excerpt.
     context = git(repo, "show", "-s", "--format=%B", commit)
@@ -145,7 +182,7 @@ def _case_from_commit(client: ChatClient, repo: Path, source: str,
         "Mark external_validation true "
         "for cases needing services or conditions unavailable in a local sandbox.\n\n"
         f"Commit message:\n{context[:8000]}\nChanged files:\n{changed[:8000]}\n"
-        f"Patch:\n{diff[:60000]}"
+        f"Patch ({len(diff)} characters; excerpt truncated={len(diff) > 60000}; use ReadPatch):\n{diff[:60000]}"
     )
     data = analyze_commit(client, repo, parent, commit, prompt)
     return case_from_annotation(repo, source, identifier, commit, data,
@@ -201,9 +238,13 @@ def validate_dataset(cases: list[Case]) -> list[str]:
         repositories.setdefault(case.repository, []).append(case)
     for spec, subset in repositories.items():
         try:
-            with _repository(spec) as repo:
+            with _repository(case_metadata(subset[0]).get("repository_alias", spec)) as repo:
                 for case in subset:
                     try:
+                        if case_metadata(case).get("kind") == "group":
+                            from .grouped import validate_group
+                            validate_group(case, repo)
+                            continue
                         parents = git(repo, "rev-list", "--parents", "-n", "1",
                                       case.target_commit).split()
                         if len(parents) != 2 or parents[1] != case.base_commit:
@@ -213,7 +254,7 @@ def validate_dataset(cases: list[Case]) -> list[str]:
                                    case.base_commit, case.target_commit, "--")
                         if diff != case.gold_diff:
                             errors.append(f"{case.case_id}: gold diff does not match commits")
-                    except subprocess.CalledProcessError as exc:
+                    except (ValueError, subprocess.SubprocessError) as exc:
                         errors.append(f"{case.case_id}: Git error: {exc}")
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             errors.append(f"{spec}: repository unavailable: {exc}")

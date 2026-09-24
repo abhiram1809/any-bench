@@ -11,9 +11,13 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import threading
 from pathlib import Path
 
 from .model import Case
+from .repository import git, git_args, git_environment
+from .metadata import case_metadata
+from .execution import CANCELLED
 
 
 class ToolError(ValueError):
@@ -27,6 +31,10 @@ def validate_size(value: str) -> str:
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("timeout", 120)
+    if argv[0] == "git":
+        kwargs.setdefault("env", git_environment())
+        argv = git_args(None, *argv[1:])
     return subprocess.run(argv, capture_output=True, text=True, **kwargs)
 
 
@@ -50,12 +58,14 @@ def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000,
     exceeded = False
     try:
         while selector.get_map():
+            if CANCELLED.is_set():
+                raise TimeoutError("Run cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(argv, timeout)
-            ready = selector.select(remaining)
+            ready = selector.select(min(remaining, .5))
             if not ready:
-                raise subprocess.TimeoutExpired(argv, timeout)
+                continue
             for key, _ in ready:
                 data = os.read(key.fd, min(65536, limit - size + 1))
                 if not data:
@@ -79,13 +89,37 @@ def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000,
     except (subprocess.TimeoutExpired, TimeoutError):
         process.kill()
         process.wait(timeout=1)
-        raise ToolError(f"Command timed out after {timeout}s")
+        error = ToolError("Run cancelled" if CANCELLED.is_set() else f"Command timed out after {timeout}s")
+        error.output = b"".join(chunks).decode(errors="replace")
+        raise error
     finally:
         selector.close()
         process.stdout.close()
 
 
 def prepare_snapshot(repository: str, base_commit: str, root: Path) -> None:
+    """Cache only full commit IDs, and copy into a private per-attempt checkout."""
+    from .workflow import fingerprint, output_lock, private_json
+    if not re.fullmatch(r"[a-fA-F0-9]{40,64}", base_commit) or os.environ.get("ANYBENCH_NO_CACHE") == "1":
+        _prepare_snapshot(repository, base_commit, root)
+        return
+    cache = Path(os.environ.get("ANYBENCH_CACHE_DIR", ".anybench/cache/snapshots"))
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = fingerprint([repository, base_commit])
+    stored = cache / key
+    with output_lock(stored, wait_seconds=180):
+        if not (stored / "complete.json").is_file():
+            with tempfile.TemporaryDirectory(dir=cache, prefix="snapshot-") as directory:
+                staged = Path(directory)
+                _prepare_snapshot(repository, base_commit, staged / "repo")
+                private_json(staged / "complete.json", {"repository": repository, "commit": base_commit})
+                if stored.exists():
+                    shutil.rmtree(stored)
+                staged.rename(stored)
+        shutil.copytree(stored / "repo", root, symlinks=True)
+
+
+def _prepare_snapshot(repository: str, base_commit: str, root: Path) -> None:
     """Create a fresh Git baseline containing only the pre-change files."""
     source = root.parent / "source"
     clone = _run(["git", "clone", "--quiet", "--no-hardlinks", "--", repository, str(source)])
@@ -108,10 +142,15 @@ def _extract_checkout(archive: tarfile.TarFile, target: Path, size_limit: int) -
     root = target.resolve()
     directories: list[tuple[Path, int]] = []
     size = 0
-    for member in archive:
+    for index, member in enumerate(archive):
+        if index > 100_000:
+            raise RuntimeError("Harness archive contains too many entries")
         path = Path(member.name)
         if path.is_absolute() or ".." in path.parts:
             raise RuntimeError("Harness archive contains an unsafe path")
+        # Never materialize agent-owned Git configuration, hooks, or object databases.
+        if ".git" in path.parts:
+            continue
         destination = (target / path).resolve()
         if not destination.is_relative_to(root):
             raise RuntimeError("Harness archive path escapes checkout")
@@ -132,7 +171,8 @@ def _extract_checkout(archive: tarfile.TarFile, target: Path, size_limit: int) -
         elif member.issym() or member.islnk():
             link = Path(member.linkname)
             origin = (destination.parent / link if member.issym() else target / link).resolve()
-            if link.is_absolute() or not origin.is_relative_to(root):
+            if (link.is_absolute() or not origin.is_relative_to(root)
+                    or ".git" in origin.relative_to(root).parts):
                 raise RuntimeError("Harness archive link escapes checkout")
             destination.parent.mkdir(parents=True, exist_ok=True)
             if member.issym():
@@ -150,7 +190,10 @@ class Sandbox:
 
     def __init__(self, case: Case, image: str = "anybench-sandbox:latest", memory: str = "1g",
                  workspace_size: str = "512m", network: str = "none",
-                 environment: dict[str, str] | None = None):
+                 environment: dict[str, str] | None = None,
+                 evaluation_files: dict[str, str] | None = None,
+                 evaluation_patch: str | None = None,
+                 protected_paths: list[str] | None = None):
         validate_size(memory)
         validate_size(workspace_size)
         self.case = case
@@ -159,15 +202,23 @@ class Sandbox:
         self.workspace_size = workspace_size
         self.network = network
         self.environment = environment or {}
+        self.evaluation_files = evaluation_files or {}
+        self.evaluation_patch = evaluation_patch
+        self.protected_paths = protected_paths or []
         self._tmp: tempfile.TemporaryDirectory | None = None
         self.root: Path | None = None
         self.container: str | None = None
+        self.baseline: Path | None = None
 
     def __enter__(self) -> "Sandbox":
         self._tmp = tempfile.TemporaryDirectory(prefix="anybench-")
         self.root = Path(self._tmp.name) / "repo"
         try:
-            prepare_snapshot(self.case.repository, self.case.base_commit, self.root)
+            prepare_snapshot(case_metadata(self.case).get("repository_alias", self.case.repository),
+                             self.case.base_commit, self.root)
+            self.baseline = self.root
+            if self.evaluation_patch is not None:
+                self.prepare_evaluation()
         except Exception:
             self.__exit__(None, None, None)
             raise
@@ -180,6 +231,22 @@ class Sandbox:
                    "--env", "HOME=/tmp",
                    "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/repo",
                    "--mount", f"type=bind,src={self.root},dst=/seed,readonly"]
+        if self.evaluation_patch is not None:
+            index = command.index("--tmpfs", command.index("--tmpfs") + 1)
+            del command[index:index + 2]
+            command.extend(["--mount", f"type=bind,src={self.root},dst=/repo,readonly",
+                            "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONPATH=/repo"])
+        if self.evaluation_files:
+            assets = Path(self._tmp.name) / "evaluation"
+            assets.mkdir(mode=0o700)
+            for name, content in self.evaluation_files.items():
+                relative = Path(name)
+                if relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
+                    raise ValueError("Unsafe evaluation asset path")
+                destination = assets / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(content, encoding="utf-8")
+            command.extend(["--mount", f"type=bind,src={assets},dst=/evaluation,readonly"])
         for name, value in self.environment.items():
             command.extend(["--env", f"{name}={value}"])
         command.extend([self.image, "sleep", "infinity"])
@@ -188,19 +255,68 @@ class Sandbox:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Docker failed: {started.stderr.strip()}")
         self.container = started.stdout.strip()
+        if self.evaluation_patch is not None:
+            return self
         copied = _run(["docker", "exec", self.container, "cp", "-R", "/seed/.", "/repo/"])
         if copied.returncode:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Could not copy snapshot into bounded workspace: {copied.stderr.strip()}")
         return self
 
+    def prepare_evaluation(self) -> None:
+        """Apply a patch using trusted metadata and restore authoritative tests."""
+        assert self.root is not None and self.evaluation_patch is not None
+        def test_asset(path: Path) -> bool:
+            return ("tests" in path.parts or "test" in path.parts or
+                    path.name.startswith("test_") or path.name in
+                    {"conftest.py", "pytest.ini"} or
+                    ".test." in path.name or ".spec." in path.name)
+
+        baseline_files = {str(path.relative_to(self.root)) for path in self.root.rglob("*")
+                          if (path.is_file() or path.is_symlink()) and ".git" not in path.parts}
+        protected = list(self.protected_paths)
+        if any(Path(path).is_absolute() or not path or
+               set(Path(path).parts) & {"..", ".git"} for path in protected):
+            raise ValueError("Unsafe protected test path")
+        protected.extend(path for path in baseline_files if test_asset(Path(path)))
+        if self.evaluation_patch.strip():
+            applied = _run(["git", "-C", str(self.root), "apply", "--binary",
+                            "--whitespace=nowarn", "-"], input=self.evaluation_patch)
+            if applied.returncode:
+                raise ToolError(f"Patch cannot be applied: {applied.stderr[-2000:]}")
+        # New candidate tests and collection hooks are not authoritative either.
+        for path in self.root.rglob("*"):
+            relative = str(path.relative_to(self.root))
+            if (relative not in baseline_files and test_asset(Path(relative)) and
+                    (path.is_file() or path.is_symlink())):
+                path.unlink()
+        for path in sorted(set(protected)):
+            if path not in baseline_files:
+                candidate = self.root / path
+                if candidate.is_file() or candidate.is_symlink():
+                    candidate.unlink()
+                continue
+            restored = _run(["git", "-C", str(self.root), "checkout", "HEAD", "--", path])
+            if restored.returncode:
+                raise ToolError(f"Cannot restore authoritative test: {path}")
+
     def __exit__(self, *_exc) -> None:
-        if self.container:
-            _run(["docker", "rm", "-f", self.container])
+        try:
+            if self.container:
+                _run(["docker", "rm", "-f", self.container], timeout=30)
+        finally:
             self.container = None
-        if self._tmp:
-            self._tmp.cleanup()
-            self._tmp = None
+            if self._tmp:
+                self._tmp.cleanup()
+                self._tmp = None
+
+    def quiesce(self) -> None:
+        """Stop leftover candidate processes before collecting their filesystem."""
+        if self.container:
+            _run(["docker", "exec", self.container, "sh", "-c",
+                  'for p in /proc/[0-9]*; do p=${p##*/}; '
+                  '[ "$p" = 1 ] || [ "$p" = "$$" ] || kill -KILL "$p" 2>/dev/null || :; done'],
+                 timeout=10)
 
     def _path(self, file_path: str) -> Path:
         if not self.root or not file_path or Path(file_path).is_absolute():
@@ -311,27 +427,38 @@ class Sandbox:
         result = self.command(["sh", "-lc", command], timeout=timeout)
         return result.returncode == 0, (result.stdout + result.stderr)[-12000:]
 
+    def apply_patch(self, patch: str) -> None:
+        if not patch.strip():
+            return
+        if not self.container:
+            raise RuntimeError("Sandbox is not running")
+        result = _limited_run(["docker", "exec", "-i", self.container, "git", "apply",
+                               "--binary", "--whitespace=nowarn", "-"], 60,
+                              input_text=patch)
+        if result.returncode:
+            raise ToolError(f"Patch cannot be applied: {result.stdout[-2000:]}")
+
     def diff(self) -> str:
         if not self.root:
             raise RuntimeError("Sandbox is not running")
-        added = _run(["git", "-C", str(self.root), "add", "-N", "--force", "."])
-        if added.returncode:
-            raise RuntimeError(f"Could not collect candidate files: {added.stderr}")
-        result = _run(["git", "-C", str(self.root), "diff", "--no-ext-diff", "--"])
-        if result.returncode:
-            raise RuntimeError(f"Could not collect candidate diff: {result.stderr}")
-        return result.stdout
+        git(self.root, "add", "-N", "--force", ".")
+        return git(self.root, "diff", "--binary", "--no-textconv", "--no-ext-diff",
+                   "HEAD", "--")
 
-    def collect_container_diff(self, trusted_baseline: bool = False) -> str:
+    def collect_container_diff(self, trusted_baseline: bool = True) -> str:
         if not self.container or not self.root:
             raise RuntimeError("Sandbox is not running")
         target = self.root.parent / "collected"
-        target.mkdir()
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(mode=0o700)
         with tempfile.TemporaryFile() as errors:
             process = subprocess.Popen(["docker", "exec", self.container, "tar", "-C",
                                         "/repo", "-cf", "-", "."],
                                        stdout=subprocess.PIPE, stderr=errors)
             assert process.stdout is not None
+            timer = threading.Timer(120, process.kill)
+            timer.start()
             try:
                 with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
                     unit = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
@@ -342,18 +469,14 @@ class Sandbox:
                 process.wait()
                 raise
             finally:
+                timer.cancel()
                 process.stdout.close()
             if process.wait() != 0:
                 errors.seek(0)
                 error = errors.read().decode(errors="replace")
                 raise RuntimeError(f"Could not collect harness checkout: {error.strip()}")
-        if trusted_baseline:
-            metadata = target / ".git"
-            if metadata.is_symlink() or metadata.is_file():
-                metadata.unlink()
-            elif metadata.exists():
-                shutil.rmtree(metadata)
-            shutil.copytree(self.root / ".git", metadata)
+        # The compatibility argument cannot opt out of this trust boundary.
+        shutil.copytree((self.baseline or self.root) / ".git", target / ".git")
         if not (target / ".git").is_dir():
             raise RuntimeError(f"Harness checkout lacks Git baseline: {[p.name for p in target.iterdir()]}")
         self.root = target

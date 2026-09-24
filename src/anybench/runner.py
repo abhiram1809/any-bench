@@ -4,7 +4,12 @@ import json
 import os
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from dataclasses import asdict
+
+from .evaluate import evaluate_patch
+from .privacy import redact, redact_value
+from .execution import CANCELLED
 from pathlib import Path
 from typing import Callable
 
@@ -102,67 +107,94 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
                        started_at=time.time(), harness=config.harness, model_id=config.model)
     record.context_profile = config.context_profile if config.harness == "anybench" else "external"
+    client = None
     try:
         context = (Sandbox(case, image=image, workspace_size=workspace_size, memory=memory)
                    if config.harness == "anybench" else
                    external_sandbox(case, config, workspace_size, memory))
         with context as sandbox:
             record.setup_seconds = time.monotonic() - start
-            if config.harness == "anybench":
-                client = ChatClient(config)
-                task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
-                harness_start = time.monotonic()
-                if config.context_profile == "enhanced":
-                    if artifact_base is None:
-                        result = enhanced_loop(client, sandbox, task, config, max_steps)
-                    else:
+            harness_start = time.monotonic()
+            try:
+                if config.harness == "anybench":
+                    client = ChatClient(config)
+                    task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
+                    if config.context_profile == "enhanced":
                         result = enhanced_loop(client, sandbox, task, config, max_steps,
-                                               artifact_base)
-                    record.context_window_tokens = config.context_window_tokens
-                    record.harness_version = "anybench-context-v1"
-                    for name in ("trace", "prompt_tokens", "completion_tokens", "tool_calls",
-                                 "model_seconds", "model_calls_by_purpose", "compactions",
-                                 "peak_context_tokens", "artifact_directory", "verification_runs",
-                                 "stop_reason", "error"):
-                        setattr(record, name, getattr(result, name))
-                    record.diff = sandbox.collect_container_diff(trusted_baseline=True)
+                                               artifact_base or Path('.anybench/artifacts'))
+                        record.context_window_tokens = config.context_window_tokens
+                        record.harness_version = "anybench-context-v2"
+                        for name in ("trace", "prompt_tokens", "completion_tokens", "tool_calls",
+                                     "model_seconds", "model_calls_by_purpose", "compactions",
+                                     "peak_context_tokens", "artifact_directory", "verification_runs",
+                                     "stop_reason", "error"):
+                            setattr(record, name, getattr(result, name))
+                    else:
+                        final, trace, pt, ct, calls, seconds = agent_loop(
+                            client, sandbox, task, max_steps=max_steps)
+                        record.trace = trace
+                        record.prompt_tokens, record.completion_tokens, record.tool_calls = pt, ct, calls
+                        record.model_seconds = seconds
+                        record.harness_version = "anybench-legacy-v2"
+                        record.stop_reason = "step_limit" if final == "Step limit reached" else "completed"
                 else:
-                    _, trace, pt, ct, calls, model_seconds = agent_loop(
-                        client, sandbox, task, max_steps=max_steps)
-                    record.trace = trace
-                    record.prompt_tokens, record.completion_tokens, record.tool_calls = pt, ct, calls
-                    record.model_seconds = model_seconds
-                    record.harness_version = "anybench-legacy-v1"
-                    record.diff = sandbox.diff()
+                    record.usage_available = False
+                    record.tool_calls = None
+                    usage = execute_harness(sandbox, case, config)
+                    record.prompt_tokens = usage.prompt_tokens or 0
+                    record.completion_tokens = usage.completion_tokens or 0
+                    record.tool_calls = usage.tool_calls
+                    record.cached_prompt_tokens = usage.cached_prompt_tokens
+                    record.cache_creation_tokens = usage.cache_creation_tokens
+                    record.usage_available = usage.prompt_tokens is not None or usage.completion_tokens is not None
+                    record.harness_version = usage.version
+            except Exception as exc:
+                record.stop_reason = getattr(exc, "reason", "timeout" if "timed out" in str(exc).lower() else "error")
+                record.error = f"{type(exc).__name__}: {exc}"
+                usage = getattr(exc, "usage", None)
+                if usage:
+                    for name in ("prompt_tokens", "completion_tokens", "cached_prompt_tokens",
+                                 "cache_creation_tokens", "tool_calls"):
+                        value = getattr(usage, name, None)
+                        if value is not None:
+                            setattr(record, name, value)
+                    record.usage_available = usage.prompt_tokens is not None or usage.completion_tokens is not None
+            finally:
                 record.harness_seconds = time.monotonic() - harness_start
-                record.cached_prompt_tokens = getattr(client, "cached_prompt_tokens", None)
-                record.cache_creation_tokens = getattr(client, "cache_creation_tokens", None)
-            else:
-                harness_start = time.monotonic()
-                usage = execute_harness(sandbox, case, config)
-                record.harness_seconds = time.monotonic() - harness_start
-                record.prompt_tokens = usage.prompt_tokens or 0
-                record.completion_tokens = usage.completion_tokens or 0
-                record.tool_calls = usage.tool_calls
-                record.cached_prompt_tokens = usage.cached_prompt_tokens
-                record.cache_creation_tokens = usage.cache_creation_tokens
-                record.usage_available = (usage.prompt_tokens is not None or
-                                          usage.completion_tokens is not None)
-                record.harness_version = usage.version
-                record.diff = sandbox.collect_container_diff()
-            record.status = ("completed" if record.stop_reason in {"", "completed"}
-                             else "exhausted" if record.stop_reason in {"step_limit", "context_limit"}
-                             else "error")
-            if case.test_command and not case.external_validation:
-                test_start = time.monotonic()
-                record.test_passed, test_output = sandbox.test(case.test_command)
-                record.test_seconds = time.monotonic() - test_start
-                record.trace.append({"test_command": case.test_command, "result": test_output})
+                if client:
+                    record.usage_available = getattr(client, "usage_available", True)
+                    for name in ("prompt_tokens", "completion_tokens", "cached_prompt_tokens", "cache_creation_tokens"):
+                        value = getattr(client, name, None)
+                        if isinstance(value, int):
+                            setattr(record, name, value)
+                    record.trace.extend(getattr(client, "events", []))
+                try:
+                    sandbox.quiesce()
+                    record.diff = (sandbox.diff() if config.harness == "anybench" and
+                                   config.context_profile == "legacy" else sandbox.collect_container_diff())
+                except Exception as exc:
+                    record.stop_reason = "error"
+                    record.error += f"; patch collection failed: {exc}"
+        record.status = ("completed" if record.stop_reason in {"", "completed"} else
+                         "exhausted" if record.stop_reason in {"step_limit", "context_limit", "token_limit", "time_limit"}
+                         else "error")
+        if case.test_command and not case.external_validation:
+            test_start = time.monotonic()
+            outcome = evaluate_patch(case, record.diff,
+                                     config.image if config.harness != "anybench" else image,
+                                     workspace_size, memory)
+            record.test_passed = outcome.passed
+            record.test_seconds = time.monotonic() - test_start
+            record.trace.append({"test_command": case.test_command, "result": outcome.output,
+                                 "evaluation": asdict(outcome)})
     except Exception as exc:
         record.status = "error"
         if record.stop_reason in {"", "completed"}:
             record.stop_reason = "error"
         record.error = (record.error + "; " if record.error else "") + f"{type(exc).__name__}: {exc}"
+    record.error = redact(record.error, config)
+    record.diff = redact(record.diff, config)
+    record.trace = redact_value(record.trace, config)
     record.seconds = time.monotonic() - start
     record.finished_at = time.time()
     return record
@@ -178,21 +210,42 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
     if concurrency < 1 or attempts < 1:
         raise ValueError("concurrency and attempts must be positive")
     results: list[RunRecord] = []
+    CANCELLED.clear()
     for config in configs:
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = [pool.submit(run_one, case, config, attempt,
-                                   (image_map or {}).get(case.repository, image), max_steps,
-                                   workspace_size, memory,
-                                   *([artifact_base] if artifact_base is not None else []))
-                       for case in cases for attempt in range(1, attempts + 1)
-                       if (case.case_id, config.name, concurrency, attempt)
-                       not in (completed_keys or set())]
-            for future in as_completed(futures):
-                record = future.result()
-                record.concurrency = concurrency
-                results.append(record)
-                if on_record:
-                    on_record(record)
+        workers = min(concurrency, config.provider_concurrency or concurrency)
+        jobs = iter((case, attempt) for case in cases for attempt in range(1, attempts + 1)
+                    if (case.case_id, config.name, concurrency, attempt) not in (completed_keys or set()))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        pending = set()
+        def submit_next():
+            job = next(jobs, None)
+            if job is None:
+                return
+            case, attempt = job
+            pending.add(pool.submit(run_one, case, config, attempt,
+                                    (image_map or {}).get(case.repository, image), max_steps,
+                                    workspace_size, memory,
+                                    *([artifact_base] if artifact_base is not None else [])))
+        try:
+            for _ in range(workers):
+                submit_next()
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    pending.remove(future)
+                    record = future.result()
+                    record.concurrency = concurrency
+                    results.append(record)
+                    if on_record:
+                        on_record(record)
+                    submit_next()
+        except KeyboardInterrupt:
+            CANCELLED.set()
+            raise
+        finally:
+            for future in pending:
+                future.cancel()
+            pool.shutdown(wait=True, cancel_futures=True)
     return sorted(results, key=lambda r: (r.model, r.case_id, r.attempt))
 
 
@@ -222,7 +275,7 @@ def preflight_run(cases: list[Case], configs: list[ModelConfig],
     if missing:
         raise ValueError(f"Missing API key environment variables: {', '.join(missing)}")
     daemon = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, timeout=30)
     if daemon.returncode:
         raise RuntimeError(f"Docker daemon unavailable: {daemon.stderr.strip()}")
     images = {(image_map or {}).get(case.repository, image) for case in cases
@@ -232,7 +285,7 @@ def preflight_run(cases: list[Case], configs: list[ModelConfig],
         images.add(PROXY_IMAGE)
     for selected in sorted(images):
         result = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", selected],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError(f"Sandbox image unavailable: {selected}. Build or pull it first")
     if any(config.harness == "anybench" and config.context_profile == "enhanced" for config in configs):
@@ -241,7 +294,7 @@ def preflight_run(cases: list[Case], configs: list[ModelConfig],
             checked = subprocess.run(["docker", "run", "--rm", "--network", "none",
                                       "--entrypoint", "python", selected, "-c",
                                       "import sys; assert sys.version_info >= (3, 11)"],
-                                     capture_output=True, text=True)
+                                     capture_output=True, text=True, timeout=30)
             if checked.returncode:
                 raise RuntimeError(f"Enhanced harness image {selected} requires Python 3.11+")
     commands = {"codex": "codex", "claude": "claude", "opencode": "opencode"}
@@ -253,6 +306,6 @@ def preflight_run(cases: list[Case], configs: list[ModelConfig],
         result = subprocess.run(["docker", "run", "--rm", "--network", "none",
                                  "--entrypoint", "sh", config.image, "-c",
                                  'command -v "$1" >/dev/null && command -v tar >/dev/null',
-                                 "sh", executable], capture_output=True, text=True)
+                                "sh", executable], capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError(f"Harness image {config.image} lacks {executable} or tar")

@@ -8,6 +8,8 @@ import selectors
 import socket
 import socketserver
 import sys
+import ipaddress
+import time
 
 
 ALLOWED = set(sys.argv[1:])
@@ -15,10 +17,14 @@ ALLOWED = set(sys.argv[1:])
 
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
+        self.connection.settimeout(15)
         line = self.rfile.readline(8192).decode("ascii", "replace").strip()
         parts = line.split()
-        while self.rfile.readline(8192) not in (b"\r\n", b"\n", b""):
-            pass
+        for _ in range(100):
+            if self.rfile.readline(8192) in (b"\r\n", b"\n", b""):
+                break
+        else:
+            return
         if len(parts) != 3 or parts[0] != "CONNECT" or ":" not in parts[1]:
             self.wfile.write(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
             return
@@ -27,7 +33,11 @@ class Handler(socketserver.StreamRequestHandler):
             self.wfile.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
             return
         try:
-            upstream = socket.create_connection((host, 443), timeout=15)
+            addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+                self.wfile.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                return
+            upstream = socket.create_connection(addresses[0][4][:2], timeout=15)
         except OSError:
             self.wfile.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             return
@@ -38,7 +48,10 @@ class Handler(socketserver.StreamRequestHandler):
             selector.register(self.connection, selectors.EVENT_READ, upstream)
             selector.register(upstream, selectors.EVENT_READ, self.connection)
             with selector:
+                deadline = time.monotonic() + 1800
                 while True:
+                    if time.monotonic() >= deadline:
+                        return
                     for key, _ in selector.select(60):
                         data = key.fileobj.recv(65536)
                         if not data:
