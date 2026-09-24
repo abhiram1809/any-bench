@@ -78,7 +78,10 @@ def _repository(spec: str):
 
 def build_dataset(repositories: list[str | Path], client: ChatClient, commits: int = 50,
                   max_cases: int | None = None, existing_cases: list[Case] | None = None,
-                  on_case: Callable[[Case], None] | None = None) -> list[Case]:
+                  on_case: Callable[[Case], None] | None = None,
+                  on_decision: Callable[[str, str, bool], None] | None = None,
+                  completed: set[tuple[str, str]] | None = None,
+                  frozen_revisions: dict[str, list[str]] | None = None) -> list[Case]:
     if commits < 1 or max_cases is not None and max_cases < 1:
         raise ValueError("commits and max_cases must be positive")
     cases: list[Case] = list(existing_cases or [])
@@ -92,19 +95,25 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
             source = str(repo.resolve()) if Path(str(spec)).expanduser().exists() else str(spec)
             identifier = hashlib.sha256(source.encode()).hexdigest()[:8]
             git(repo, "rev-parse", "--is-inside-work-tree")
-            revisions = git(repo, "log", f"-{commits}", "--first-parent", "--format=%H").splitlines()
+            revisions = (frozen_revisions[source] if frozen_revisions is not None else
+                         git(repo, "log", f"-{commits}", "--first-parent", "--format=%H").splitlines())
             sources.append((repo, source, identifier, revisions))
         for index in range(max((len(item[3]) for item in sources), default=0)):
             for repo, source, identifier, revisions in sources:
-                if index >= len(revisions) or (source, revisions[index]) in seen:
+                if (index >= len(revisions) or (source, revisions[index]) in seen or
+                        (source, revisions[index]) in (completed or set())):
                     continue
                 case = _case_from_commit(client, repo, source, identifier, revisions[index])
                 if case is None:
+                    if on_decision:
+                        on_decision(source, revisions[index], False)
                     continue
                 cases.append(case)
                 seen.add((source, case.target_commit))
                 if on_case:
                     on_case(case)
+                if on_decision:
+                    on_decision(source, revisions[index], True)
                 if max_cases is not None and len(cases) >= max_cases:
                     return cases
     return cases
@@ -139,6 +148,23 @@ def _case_from_commit(client: ChatClient, repo: Path, source: str,
         f"Patch:\n{diff[:60000]}"
     )
     data = analyze_commit(client, repo, parent, commit, prompt)
+    return case_from_annotation(repo, source, identifier, commit, data,
+                                parent=parent, diff=diff)
+
+
+def case_from_annotation(repo: Path, source: str, identifier: str, commit: str,
+                         data: dict, *, parent: str | None = None,
+                         diff: str | None = None) -> Case | None:
+    """Build a case from host or API annotations while Git supplies its immutable patch."""
+    if parent is None:
+        parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
+        if len(parents) != 2:
+            return None
+        parent = parents[1]
+    if diff is None:
+        diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--")
+    if not diff.strip():
+        return None
     if data.get("eligible") is False:
         return None
     if "eligible" in data and data["eligible"] is not True:

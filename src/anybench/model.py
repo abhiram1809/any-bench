@@ -82,10 +82,13 @@ class ModelConfig:
     prompt_cache: bool = True
     context_profile: str = "enhanced"
     context_window_tokens: int = 200_000
+    role: str = "candidate"
 
     def __post_init__(self) -> None:
         if not self.name or not self.model:
             raise ValueError("name and model are required")
+        if self.role not in {"candidate", "builder", "judge"}:
+            raise ValueError("role must be candidate, builder, or judge")
         if self.api not in {"chat_completions", "responses", "anthropic"}:
             raise ValueError("Unknown model API")
         if self.harness not in {"anybench", "codex", "claude", "opencode", "custom"}:

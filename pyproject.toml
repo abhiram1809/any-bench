@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any-bench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Build private repository coding benchmarks and run them in Docker"
 requires-python = ">=3.11"
 
@@ -13,3 +13,6 @@ anybench = "anybench.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md"]

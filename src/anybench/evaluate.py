@@ -47,9 +47,24 @@ def validate_test_commands(cases: list[Case], image: str = "anybench-sandbox:lat
                            image_map: dict[str, str] | None = None,
                            workspace_size: str = "512m", memory: str = "1g") -> list[str]:
     """Require local checks to fail on the base and pass on the gold revision."""
-    errors = []
+    results = validation_results(cases, image, image_map, workspace_size, memory)
+    return [f"{item['case_id']}: {item['reason']}" for item in results
+            if item['status'] == 'invalid']
+
+
+def validation_results(cases: list[Case], image: str = "anybench-sandbox:latest",
+                       image_map: dict[str, str] | None = None,
+                       workspace_size: str = "512m", memory: str = "1g") -> list[dict]:
+    """Give every case a visible verification or skip reason."""
+    results = []
     for case in cases:
-        if not case.test_command or case.external_validation:
+        if case.external_validation:
+            results.append({"case_id": case.case_id, "status": "skipped",
+                            "reason": case.external_validation_reason or "external validation"})
+            continue
+        if not case.test_command:
+            results.append({"case_id": case.case_id, "status": "skipped",
+                            "reason": "no local test command"})
             continue
         selected_image = (image_map or {}).get(case.repository, image)
         try:
@@ -61,10 +76,16 @@ def validate_test_commands(cases: list[Case], image: str = "anybench-sandbox:lat
                          memory=memory) as gold:
                 gold_passed, gold_output = gold.test(case.test_command)
         except Exception as exc:
-            errors.append(f"{case.case_id}: test validation error: {exc}")
+            results.append({"case_id": case.case_id, "status": "invalid",
+                            "reason": f"test validation error: {exc}"})
             continue
+        reasons = []
         if base_passed:
-            errors.append(f"{case.case_id}: test also passes before the change")
+            reasons.append("test also passes before the change")
         if not gold_passed:
-            errors.append(f"{case.case_id}: test fails on gold commit: {gold_output[-500:]}")
-    return errors
+            reasons.append(f"test fails on gold commit: {gold_output[-500:]}")
+        results.append({"case_id": case.case_id,
+                        "status": "invalid" if reasons else "verified",
+                        "reason": "; ".join(reasons), "base_passed": base_passed,
+                        "gold_passed": gold_passed, "image": selected_image})
+    return results

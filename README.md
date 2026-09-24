@@ -2,6 +2,34 @@
 
 AnyBench builds coding benchmarks from **repositories you supply at runtime**. It turns historical commits into tasks, runs candidate models against pre-change checkouts, evaluates their patches, and writes a standalone HTML report. There is no built-in benchmark repository or model provider.
 
+## Agent skill: a guided workflow
+
+The bundled [AnyBench skill](skills/anybench/SKILL.md) lets Claude Code or an agent harness that reads portable Agent Skills guide setup, case authoring, verification, candidate runs, and reporting from a natural language request. Install it from any working directory after installing the Python package:
+
+```sh
+anybench skill install --agent claude --scope user
+anybench skill install --agent portable --scope project --project /path/to/project
+```
+
+Claude installs under `.claude/skills/anybench`; the portable form installs under `.agents/skills/anybench`, used by [Cursor](https://cursor.com/docs/skills), [OpenCode](https://opencode.ai/docs/skills/), and [Oh My Pi](https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md). The source follows the [Agent Skills specification](https://agentskills.io/specification). Reinstalling the same version is safe; a modified installed skill is preserved unless `--overwrite` is given. Project installations keep the skill with the project; user installations put it under the home directory. `skills/anybench` in this repository points at the package's canonical skill files.
+
+The default guided run reviews the latest **50** commits, aims for **five verified** cases, uses one candidate attempt and concurrency **2**, and gives the enhanced candidate a **200,000-token** context window with **30 shared calls**. It stops and reports when fewer than five cases can be verified; it does not silently broaden the search. Host-agent case authoring needs no separate builder API key. A builder endpoint remains optional.
+
+```sh
+anybench doctor --json --models .anybench/session/candidates.json --output-dir .anybench/session
+anybench prepare /path/to/repo --commits 50 --output .anybench/session/contexts.jsonl
+# The host agent reviews contexts and writes annotations.jsonl.
+anybench import .anybench/session/contexts.jsonl .anybench/session/annotations.jsonl --output .anybench/session/cases.csv
+anybench validate .anybench/session/cases.csv --check-tests --json-output .anybench/session/validation.json --verified-output .anybench/session/verified.csv
+anybench run .anybench/session/verified.csv --models .anybench/session/candidates.json --artifact-dir .anybench/session/artifacts --output .anybench/session/attempts.jsonl
+anybench summary .anybench/session/attempts.jsonl --dataset .anybench/session/verified.csv --json
+anybench report .anybench/session/attempts.jsonl --output .anybench/session/report.html
+```
+
+Each annotation names `case_id`, `eligible`, `problem_statement`, `hint`, `test_command`, `external_validation`, and `external_validation_reason`. A rejected commit needs only `case_id`, `eligible:false`, and an optional `reason`. Base commits and reference patches come from Git; annotations cannot override them. Review commands before `validate --check-tests`, which runs them in network-disabled Docker on parent and target snapshots. The JSON validation file marks every case `verified`, `invalid`, or `skipped` with a reason; only verified cases enter `verified.csv`. Tasks with no usable local test are kept visible as skipped. These are private historical tasks, not the official SWE-bench dataset schema or test patch format.
+
+`run --resume`, `evaluate --resume`, and `build --resume` use frozen input manifests. They skip recorded attempts and judge outcomes, including errors, so resuming does not silently repay failed calls. A changed dataset, model configuration, image ID, or budget is rejected. Start a new output path or use `--overwrite` for a deliberate rerun. Keep separate model JSON files for candidate, optional API builder, and optional judge roles. Set `"role":"candidate"`, `"role":"builder"`, or `"role":"judge"` in new entries; `run` refuses entries marked builder or judge. Omitted roles remain candidate for old configs. `doctor` checks named credential variables without printing their values or calling a model. `summary` separates completed, failed, exhausted, locally passed, and unscored attempts; CLI success is not a claim of benchmark accuracy.
+
 ## 1. Install and prepare Docker
 
 You need Python 3.11+, Git, and a working Docker daemon. From this repository:
@@ -30,14 +58,16 @@ mkdir -p .anybench
 Create `.anybench/builder.json`:
 
 ```json
-[{"name":"builder","base_url":"https://provider.example/v1","model":"builder-model","api_key_env":"BUILDER_API_KEY"}]
+[{"name":"builder","role":"builder","base_url":"https://provider.example/v1","model":"builder-model","api_key_env":"BUILDER_API_KEY"}]
 ```
 
 Create `.anybench/candidates.json`:
 
 ```json
-[{"name":"candidate","base_url":"https://provider.example/v1","model":"candidate-model","api_key_env":"CANDIDATE_API_KEY"}]
+[{"name":"candidate","role":"candidate","base_url":"https://provider.example/v1","model":"candidate-model","api_key_env":"CANDIDATE_API_KEY"}]
 ```
+
+If you want optional model judging, create a separate `.anybench/judge.json` with the same fields, `"name":"judge"`, and `"role":"judge"`. Local tests do not require a judge endpoint.
 
 Each file is a JSON array. `api_key_env` is the **environment variable name**, not the key. Set those variables with your shell or secret manager before running. In Bash, `read -rsp 'Builder API key: ' BUILDER_API_KEY; echo; export BUILDER_API_KEY` prompts without echoing the value. Repeat for `CANDIDATE_API_KEY`.
 
@@ -150,11 +180,11 @@ anybench validate .anybench/cases.csv --check-tests
 
 ```sh
 anybench run .anybench/cases.csv --models .anybench/candidates.json --concurrency 2 --output .anybench/attempts.jsonl
-anybench evaluate .anybench/cases.csv .anybench/attempts.jsonl --models .anybench/builder.json --judge builder --output .anybench/scored.jsonl
+anybench evaluate .anybench/cases.csv .anybench/attempts.jsonl --models .anybench/judge.json --judge judge --output .anybench/scored.jsonl
 anybench report .anybench/scored.jsonl --output .anybench/report.html
 ```
 
-`run` uses two concurrent containers by default. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish, but a **new** `run` command replaces its output file after preflight; choose a new filename to keep an earlier run. The HTML report shows accuracy, coverage, throughput, scaling, harness identity, token and cache usage, tool calls, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions. Older model configs and result files remain readable as built-in Chat Completions runs.
+`run` uses two concurrent containers by default. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish and refuses to replace an existing output unless `--overwrite` is explicit. Use `--resume` with unchanged inputs to run only missing attempts. The HTML report shows accuracy, coverage, throughput, scaling, harness identity, token and cache usage, tool calls, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions. Older model configs and result files remain readable as built-in Chat Completions runs.
 
 Containers have dropped capabilities, a read-only root filesystem, and CPU, memory, and PID limits. Built-in harness containers have no network; external harness containers join an internal network with an allowlist proxy. Each editable checkout is copied into a size-limited temporary filesystem; the host snapshot is mounted read-only. The default checkout limit is `512m` and container memory limit is `1g`. For a larger repository, pass both `--workspace-size 1g --memory 2g` to `validate --check-tests` and `run`. The host still needs enough disk space to clone the source repository before the container starts. The enhanced built-in candidate uses `Run` for sandboxed test/check commands. The legacy profile retains its restricted `Bash` tool (`cat`, `grep`, `glob`, `wc`, and `jq`). The dataset's evaluator command stays private and runs separately after the attempt.
 

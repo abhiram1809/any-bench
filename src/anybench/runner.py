@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Callable
 
 from .llm import ChatClient
@@ -95,7 +96,8 @@ def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: in
 
 def run_one(case: Case, config: ModelConfig, attempt: int = 1,
             image: str = "anybench-sandbox:latest", max_steps: int = 30,
-            workspace_size: str = "512m", memory: str = "1g") -> RunRecord:
+            workspace_size: str = "512m", memory: str = "1g",
+            artifact_base: Path | None = None) -> RunRecord:
     start = time.monotonic()
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
                        started_at=time.time(), harness=config.harness, model_id=config.model)
@@ -111,7 +113,11 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
                 task = f"Base commit: {case.base_commit}\n\n{case.problem_statement}"
                 harness_start = time.monotonic()
                 if config.context_profile == "enhanced":
-                    result = enhanced_loop(client, sandbox, task, config, max_steps)
+                    if artifact_base is None:
+                        result = enhanced_loop(client, sandbox, task, config, max_steps)
+                    else:
+                        result = enhanced_loop(client, sandbox, task, config, max_steps,
+                                               artifact_base)
                     record.context_window_tokens = config.context_window_tokens
                     record.harness_version = "anybench-context-v1"
                     for name in ("trace", "prompt_tokens", "completion_tokens", "tool_calls",
@@ -166,7 +172,9 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
              attempts: int = 1, image: str = "anybench-sandbox:latest",
              max_steps: int = 30, image_map: dict[str, str] | None = None,
              on_record: Callable[[RunRecord], None] | None = None,
-             workspace_size: str = "512m", memory: str = "1g") -> list[RunRecord]:
+             workspace_size: str = "512m", memory: str = "1g",
+             completed_keys: set[tuple[str, str, int, int]] | None = None,
+             artifact_base: Path | None = None) -> list[RunRecord]:
     if concurrency < 1 or attempts < 1:
         raise ValueError("concurrency and attempts must be positive")
     results: list[RunRecord] = []
@@ -174,8 +182,11 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one, case, config, attempt,
                                    (image_map or {}).get(case.repository, image), max_steps,
-                                   workspace_size, memory)
-                       for case in cases for attempt in range(1, attempts + 1)]
+                                   workspace_size, memory,
+                                   *([artifact_base] if artifact_base is not None else []))
+                       for case in cases for attempt in range(1, attempts + 1)
+                       if (case.case_id, config.name, concurrency, attempt)
+                       not in (completed_keys or set())]
             for future in as_completed(futures):
                 record = future.result()
                 record.concurrency = concurrency
@@ -190,13 +201,16 @@ def run_sweep(cases: list[Case], configs: list[ModelConfig],
              image: str = "anybench-sandbox:latest", max_steps: int = 30,
              image_map: dict[str, str] | None = None,
              on_record: Callable[[RunRecord], None] | None = None,
-             workspace_size: str = "512m", memory: str = "1g") -> list[RunRecord]:
+             workspace_size: str = "512m", memory: str = "1g",
+             completed_keys: set[tuple[str, str, int, int]] | None = None,
+             artifact_base: Path | None = None) -> list[RunRecord]:
     if not concurrencies or any(level < 1 for level in concurrencies):
         raise ValueError("concurrencies must contain positive integers")
     results = []
     for level in concurrencies:
         results.extend(run_cases(cases, configs, level, attempts, image, max_steps,
-                                 image_map, on_record, workspace_size, memory))
+                                 image_map, on_record, workspace_size, memory,
+                                 completed_keys, artifact_base))
     return results
 
 
