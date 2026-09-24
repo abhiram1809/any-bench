@@ -530,7 +530,9 @@ class DockerToolIntegrationTests(unittest.TestCase):
             commit(repo, "Uppercase second line")
             target = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"],
                                              text=True).strip()
-            case = Case("c", str(repo), base, target, "Fix", "", "",
+            gold_diff = subprocess.check_output(
+                ["git", "-C", str(repo), "diff", "--binary", base, target], text=True)
+            case = Case("c", str(repo), base, target, "Fix", "", gold_diff,
                         test_command="grep -q TWO file.txt")
             with Sandbox(case) as sandbox:
                 self.assertEqual(sandbox.read("file.txt", [[1, 1]]), "one\n")

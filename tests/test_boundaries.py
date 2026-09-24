@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from anybench.evaluate import evaluate_patch
+from anybench.evaluate import evaluate_patch, validate_test_commands
 from anybench.model import Case
 from anybench.outcomes import classify
 from anybench.repository import OutputLimitError, git
@@ -17,6 +17,21 @@ from support import LocalSandbox, commit
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_validation_replays_the_recorded_reference_patch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            git(repo, 'init', '-q')
+            (repo / 'file.txt').write_text('one\ntwo\n')
+            base = commit(repo, 'Base')
+            (repo / 'file.txt').write_text('one\nTWO\n')
+            target = commit(repo, 'Fix')
+            diff = git(repo, 'diff', '--binary', base, target)
+            case = Case('c', str(repo), base, target, 'Fix', '', diff, 'grep -q TWO file.txt')
+            with patch('anybench.evaluate.Sandbox', LocalSandbox):
+                self.assertEqual(validate_test_commands([case]), [])
+                case.gold_diff = ''
+                self.assertIn('test fails on gold commit', validate_test_commands([case])[0])
+
     def test_git_output_is_bounded(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
