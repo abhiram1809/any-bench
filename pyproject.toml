@@ -1,12 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "any-bench"
-version = "0.3.0"
+version = "0.4.0"
 description = "Build private repository coding benchmarks and run them in Docker"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+keywords = ["benchmark", "coding agents", "llm", "evaluation"]
+
+[project.urls]
+Homepage = "https://github.com/abhiram1809/any-bench"
+Documentation = "https://github.com/abhiram1809/any-bench/blob/main/docs/advanced.md"
+Issues = "https://github.com/abhiram1809/any-bench/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "ruff>=0.9", "mypy>=1.14"]

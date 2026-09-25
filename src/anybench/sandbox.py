@@ -228,12 +228,14 @@ class Sandbox:
                    "--pids-limit", "128", "--memory", self.memory, "--cpus", "1",
                    "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
                    "--tmpfs", f"/repo:rw,exec,nosuid,nodev,size={self.workspace_size},mode=1777",
+                   "--tmpfs", "/work:rw,exec,nosuid,nodev,size=256m",
                    "--env", "HOME=/tmp",
+                   "--env", "TMPDIR=/work", "--env", "GOTMPDIR=/work",
                    "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/repo",
                    "--mount", f"type=bind,src={self.root},dst=/seed,readonly"]
         if self.evaluation_patch is not None:
-            index = command.index("--tmpfs", command.index("--tmpfs") + 1)
-            del command[index:index + 2]
+            index = command.index(f"/repo:rw,exec,nosuid,nodev,size={self.workspace_size},mode=1777")
+            del command[index - 1:index + 1]
             command.extend(["--mount", f"type=bind,src={self.root},dst=/repo,readonly",
                             "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONPATH=/repo"])
         if self.evaluation_files:

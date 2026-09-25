@@ -110,7 +110,8 @@ def expand_config(argv: list[str]) -> list[str]:
 
 
 def invoke(argv: list[str], callback) -> None:
-    argv = expand_config(argv)
+    if not argv or argv[0] not in {"start", "configure"}:
+        argv = expand_config(argv)
     outputs = []
     output_indices = set()
     for flag in ("--output", "--json-output", "--verified-output", "--metrics-output"):
