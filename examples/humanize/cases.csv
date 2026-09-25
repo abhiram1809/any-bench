@@ -1,0 +1,413 @@
+case_id,repository,base_commit,target_commit,problem_statement,hint,gold_diff,test_command,external_validation,external_validation_reason
+python-humanize-881ec53d-392aef707c0e,https://github.com/python-humanize/humanize.git,ca892b368a535a79cc5e2181d052245b94fd6652,392aef707c0e74341ab4a51420984e9ea6b566c5,"In the `naturaldelta` function, when the time delta is one year or more, the number of years is currently computed by truncating (integer division of) `delta.days / 365`. This causes values like 2.6 years to be reported as ""2 years"" instead of ""3 years"". Change the calculation so that the year count is rounded to the nearest integer instead of truncated. The resulting number should still be formatted with thousands separators (via `intcomma`) and localized with the existing pluralization logic. For example, a timedelta of 365*2.4 days should yield ""2 years"", 365*2.6 should yield ""3 years"", and 365*1_141 should yield ""1,141 years"".",Look at the final return statement in `naturaldelta` in src/humanize/time.py — the years value is currently computed with floor division semantics; Python's `round` gives nearest-integer rounding.,"diff --git a/src/humanize/time.py b/src/humanize/time.py
+index 303bed2..82a8042 100644
+--- a/src/humanize/time.py
++++ b/src/humanize/time.py
+@@ -256,6 +256,7 @@ def naturaldelta(
+ 
+         return _ngettext(""1 year, %d day"", ""1 year, %d days"", days) % days
+ 
++    years = round(delta.days / 365)
+     return _ngettext(""%d year"", ""%d years"", years).replace(""%d"", ""%s"") % intcomma(years)
+ 
+ 
+diff --git a/tests/test_time.py b/tests/test_time.py
+index c3743bb..f63b5cb 100644
+--- a/tests/test_time.py
++++ b/tests/test_time.py
+@@ -127,6 +127,11 @@ def test_naturaldelta_nomonths(test_input: dt.timedelta, expected: str) -> None:
+         (dt.timedelta(days=9), ""9 days""),
+         (dt.timedelta(days=365), ""a year""),
+         (dt.timedelta(days=365 * 1_141), ""1,141 years""),
++        (dt.timedelta(days=365 * 2), ""2 years""),
++        (dt.timedelta(days=365 * 2.4), ""2 years""),
++        (dt.timedelta(days=365 * 2.6), ""3 years""),
++        (dt.timedelta(days=365 * 2.9), ""3 years""),
++        (dt.timedelta(days=365 * 3), ""3 years""),
+         (""NaN"", ""NaN""),  # Returns non-numbers unchanged.
+         # largest possible timedelta
+         (dt.timedelta(days=999_999_999), ""2,739,726 years""),
+","PYTHONPATH=src python -c 'import sys,types; m=types.ModuleType(""humanize._version""); m.__version__=""0""; sys.modules[m.__name__]=m; import humanize; import datetime as dt; assert humanize.naturaldelta(dt.timedelta(days=365*2.6)) == ""3 years""'",False,Tests are pure unit tests on timedelta inputs; no external services or conditions are required.
+python-humanize-881ec53d-ca892b368a53,https://github.com/python-humanize/humanize.git,f971127ce7e7770d3ff5be05cfc484bdf9302e04,ca892b368a535a79cc5e2181d052245b94fd6652,"The `intword()` function fails to carry rounding to the next unit for very large numbers. When a value rounds up to exactly the next power of 1000, the function is supposed to advance to the next unit (e.g. render 999,999,999,999,999,999,999,999,999 as ""1.0 septillion"" rather than ""1000.0 sextillion""). However, for magnitudes above roughly 10**22, the carry check is performed in floating point and no longer matches the exact integer power, so the carry is silently skipped and values like 10**24 - 1 are rendered as ""1000.0 sextillion"" instead of ""1.0 septillion"". Fix the carry detection so that values of the form 10**e - 1 (for e in 6..33 step 3) correctly roll over to ""1.0 <next unit>"" with the default ""%.1f"" format and ""1 <next unit>"" with ""%.0f"", while leaving the documented gap between decillion and googol untouched (e.g. intword(10**36) must still be ""1000.0 decillion"" and intword(2 * 10**100) must still be ""2.0 googol"").",The comparison `rounded_value * power == powers[ordinal + 1]` loses exactness in floating point for very large powers; compare the rounded mantissa against the integer ratio of the two powers instead.,"diff --git a/src/humanize/number.py b/src/humanize/number.py
+index ebccfb9..52a5356 100644
+--- a/src/humanize/number.py
++++ b/src/humanize/number.py
+@@ -282,8 +282,12 @@ def intword(value: NumberOrString, format: str = ""%.1f"") -> str:
+     chopped = value / power
+     rounded_value = float(format % chopped)
+ 
+-    if not largest_ordinal and rounded_value * power == powers[ordinal + 1]:
+-        # After rounding, we end up just at the next power
++    if not largest_ordinal and rounded_value == powers[ordinal + 1] // power:
++        # After rounding, we end up just at the next power. Compare against the
++        # integer ratio between the two powers instead of ``rounded_value * power``:
++        # for values above ~10**22 the latter is evaluated in floating point and
++        # no longer equals the exact ``powers[ordinal + 1]``, so the carry was
++        # silently skipped (e.g. 10**24 - 1 rendered as ""1000.0 sextillion"").
+         ordinal += 1
+         rounded_value = 1.0
+ 
+diff --git a/tests/test_number.py b/tests/test_number.py
+index 755e29e..5fb12fa 100644
+--- a/tests/test_number.py
++++ b/tests/test_number.py
+@@ -148,6 +148,47 @@ def test_intword(test_args: list[str], expected: str) -> None:
+     assert humanize.intword(*test_args) == expected
+ 
+ 
++def test_intword_rounding_rollover() -> None:
++    """"""Values that round up to the next power must carry to the next unit.
++
++    Regression: for magnitudes above ~10**22 the carry was checked in floating
++    point (``rounded_value * power == powers[ordinal + 1]``) and no longer
++    matched the exact integer power, so e.g. ``10**24 - 1`` was rendered as
++    ""1000.0 sextillion"" instead of ""1.0 septillion"".
++    """"""
++    units = [
++        ""thousand"",
++        ""million"",
++        ""billion"",
++        ""trillion"",
++        ""quadrillion"",
++        ""quintillion"",
++        ""sextillion"",
++        ""septillion"",
++        ""octillion"",
++        ""nonillion"",
++        ""decillion"",
++    ]
++    # value = 10**e - 1 rounds up to 10**e with ""%.1f""/""%.0f"", i.e. exactly 1.0
++    # of the unit sitting at 10**e (units[i] where 10**e == powers[i]).
++    for i, exponent in enumerate(range(6, 34, 3), start=1):
++        value = 10**exponent - 1
++        assert humanize.intword(value) == f""1.0 {units[i]}""
++        assert humanize.intword(value, ""%.0f"") == f""1 {units[i]}""
++
++    # The mantissa must never render at or above 1000 for values below a
++    # decillion; a bare ""1000.0"" is only expected in the sparse gap between
++    # decillion and googol, which has no dedicated unit.
++    for exponent in range(6, 34, 3):
++        rendered = humanize.intword(10**exponent - 1)
++        mantissa = float(rendered.split("" "", 1)[0])
++        assert mantissa < 1000
++
++    # The documented decillion..googol gap must be left untouched.
++    assert humanize.intword(10**36) == ""1000.0 decillion""
++    assert humanize.intword(2 * 10**100) == ""2.0 googol""
++
++
+ @pytest.mark.parametrize(
+     ""test_input, expected"",
+     [
+","PYTHONPATH=src python -c 'import sys,types; m=types.ModuleType(""humanize._version""); m.__version__=""0""; sys.modules[m.__name__]=m; import humanize; assert humanize.intword(10**24-1) == ""1.0 septillion""'",False,
+python-humanize-881ec53d-ffdf407fdfe1,https://github.com/python-humanize/humanize.git,bada0f88b4d115b96d94db1fe73b20579e84fc14,ffdf407fdfe1a5738159b989eb2df190ed780448,"The `natural_list` function currently accepts only lists. Update it so it supports any iterable (e.g. tuples, dict views, generators, ranges), producing the same human-readable comma-and-'and' formatting. Items should be converted to strings, and an empty iterable should still return an empty string. Also update the type annotation accordingly.","Materialize the iterable into a list of strings first, then apply the existing length-based formatting logic.","diff --git a/src/humanize/lists.py b/src/humanize/lists.py
+index 525f0e3..36e8ab7 100644
+--- a/src/humanize/lists.py
++++ b/src/humanize/lists.py
+@@ -4,15 +4,16 @@ from __future__ import annotations
+ 
+ TYPE_CHECKING = False
+ if TYPE_CHECKING:
++    from collections.abc import Iterable
+     from typing import Any
+ 
+ __all__ = [""natural_list""]
+ 
+ 
+-def natural_list(items: list[Any]) -> str:
++def natural_list(items: Iterable[Any]) -> str:
+     """"""Natural list.
+ 
+-    Convert a list of items into a human-readable string with commas and 'and'.
++    Convert an iterable of items into a human-readable string with commas and 'and'.
+ 
+     Examples:
+         >>> natural_list([""one"", ""two"", ""three""])
+@@ -23,16 +24,17 @@ def natural_list(items: list[Any]) -> str:
+         'one'
+ 
+     Args:
+-        items (list): An iterable of items.
++        items (Iterable): An iterable of items.
+ 
+     Returns:
+         str: A string with commas and 'and' in the right places.
+     """"""
+-    if not items:
++    item_list = [str(item) for item in items]
++    if not item_list:
+         return """"
+-    if len(items) == 1:
+-        return str(items[0])
+-    elif len(items) == 2:
+-        return f""{str(items[0])} and {str(items[1])}""
++    if len(item_list) == 1:
++        return item_list[0]
++    elif len(item_list) == 2:
++        return f""{item_list[0]} and {item_list[1]}""
+     else:
+-        return "", "".join([str(item) for item in items[:-1]]) + f"" and {str(items[-1])}""
++        return "", "".join(item_list[:-1]) + f"" and {item_list[-1]}""
+diff --git a/tests/test_lists.py b/tests/test_lists.py
+index cc514f3..9b3c1b7 100644
+--- a/tests/test_lists.py
++++ b/tests/test_lists.py
+@@ -1,5 +1,8 @@
+ from __future__ import annotations
+ 
++from collections.abc import Iterable
++from typing import Any
++
+ import pytest
+ 
+ import humanize
+@@ -16,9 +19,13 @@ import humanize
+         ([[""""]], """"),
+         ([[1, 2, 3]], ""1, 2 and 3""),
+         ([[1, ""two""]], ""1 and two""),
++        ([(""one"", ""two"", ""three"")], ""one, two and three""),
++        ([(""one"", ""two"")], ""one and two""),
++        ([(""one"",)], ""one""),
++        ([{""one"": 1, ""two"": 2}.keys()], ""one and two""),
++        ([(x for x in [""one"", ""two"", ""three""])], ""one, two and three""),
++        ([range(1, 4)], ""1, 2 and 3""),
+     ],
+ )
+-def test_natural_list(
+-    test_args: list[str] | list[int] | list[str | int], expected: str
+-) -> None:
++def test_natural_list(test_args: Iterable[Any], expected: str) -> None:
+     assert humanize.natural_list(*test_args) == expected
+","PYTHONPATH=src python -c 'import sys,types; m=types.ModuleType(""humanize._version""); m.__version__=""0""; sys.modules[m.__name__]=m; import humanize; assert humanize.natural_list(iter([""a"",""b"",""c""])) == ""a, b and c""'",False,
+python-humanize-881ec53d-bada0f88b4d1,https://github.com/python-humanize/humanize.git,e46732ed235019682b7bfc6c44443e247b332e95,bada0f88b4d115b96d94db1fe73b20579e84fc14,"The humanize project's translation catalog update workflow loses translations when catalogs are regenerated. Two related defects need fixing:
+
+1. In `src/humanize/number.py`, the ordinal suffixes and the apnumber words ('zero' through 'nine') are written as plain literals. Because they are not marked for phrase extraction, `xgettext` does not pick them up, and when `scripts/update-translations.sh` regenerates `humanize.pot` and merges it into each locale's `.po` file, the existing translations for these phrases are dropped from the catalogs.
+
+2. The `xgettext` invocation in `scripts/update-translations.sh` does not recognize the contextual-translation marker used for the gendered ordinal suffixes (the `P_` function with a message context), so those contextual phrases are never extracted either.
+
+Fix this by introducing noop marker functions in `src/humanize/i18n.py` that mirror the existing translating functions but return their arguments unchanged (one for plain messages, one for contextual messages), mark the ordinal suffixes and apnumber words in `src/humanize/number.py` with these noop markers so the phrases survive catalog regeneration, and add the missing keyword flag for the contextual noop marker to the `xgettext` call in `scripts/update-translations.sh`. The behavior of `humanize.apnumber` and `humanize.ordinal` at runtime must remain unchanged: after regenerating and recompiling the catalogs, all previously translated values (e.g. 'eins' for 1 in de_DE, 'un' for 1 in fr_FR, and the gendered ordinal suffixes) must still be returned.","Look at how the existing `NS_` noop marker is defined in `src/humanize/i18n.py` and how `xgettext` keyword flags are specified for functions with a message context (like `P_:1c,2`).","diff --git a/README.md b/README.md
+index efa939e..e14dec6 100644
+--- a/README.md
++++ b/README.md
+@@ -233,10 +233,12 @@ FileNotFoundError: [Errno 2] No translation file found for domain: 'humanize'
+ How to add new phrases to existing locale files:
+ 
+ ```sh
+-xgettext --from-code=UTF-8 -o humanize.pot -k'_' -k'N_' -k'P_:1c,2' -k'NS_:1,2' -k'_ngettext:1,2' -l python src/humanize/*.py  # extract new phrases
+-msgmerge -U src/humanize/locale/ru_RU/LC_MESSAGES/humanize.po humanize.pot # add them to locale files
++scripts/update-translations.sh
+ ```
+ 
++This extracts new phrases from the source code into `humanize.pot`, merges them into
++each locale's `.po` file and compiles the binary `.mo` catalogs.
++
+ How to add a new locale:
+ 
+ ```sh
+diff --git a/scripts/update-translations.sh b/scripts/update-translations.sh
+index bb4ec80..7827900 100755
+--- a/scripts/update-translations.sh
++++ b/scripts/update-translations.sh
+@@ -1,7 +1,17 @@
+ set -e
+ 
+ # extract new phrases
+-xgettext --from-code=UTF-8 -o humanize.pot -k'_' -k'N_' -k'P_:1c,2' -k'NS_:1,2' -k'_ngettext:1,2' -l python src/humanize/*.py
++xgettext \
++    --from-code=UTF-8 \
++    -o humanize.pot \
++    -k'_' \
++    -k'N_' \
++    -k'P_:1c,2' \
++    -k'PS_:1c,2' \
++    -k'NS_:1,2' \
++    -k'_ngettext:1,2' \
++    -l python \
++    src/humanize/*.py
+ 
+ for d in src/humanize/locale/*/; do
+     locale=""$(basename $d)""
+diff --git a/src/humanize/i18n.py b/src/humanize/i18n.py
+index f9b1c42..0bf73de 100644
+--- a/src/humanize/i18n.py
++++ b/src/humanize/i18n.py
+@@ -179,6 +179,19 @@ def _ngettext_noop(singular: str, plural: str) -> tuple[str, str]:
+     return singular, plural
+ 
+ 
++def _pgettext_noop(msgctxt: str, message: str) -> tuple[str, str]:
++    """"""Mark a contextual translation without translating it.
++
++    Args:
++        msgctxt (str): Context of the translation.
++        message (str): Text to translate in the future.
++
++    Returns:
++        tuple: Original context and text, unchanged.
++    """"""
++    return msgctxt, message
++
++
+ def thousands_separator() -> str:
+     """"""Return the thousands separator for a locale, default to comma.
+ 
+diff --git a/src/humanize/number.py b/src/humanize/number.py
+index b169fc2..ebccfb9 100644
+--- a/src/humanize/number.py
++++ b/src/humanize/number.py
+@@ -7,9 +7,11 @@ __lazy_modules__ = {""bisect""}
+ import bisect
+ 
+ from .i18n import _gettext as _
++from .i18n import _gettext_noop as N_
+ from .i18n import _ngettext, decimal_separator, thousands_separator
+ from .i18n import _ngettext_noop as NS_
+ from .i18n import _pgettext as P_
++from .i18n import _pgettext_noop as PS_
+ 
+ TYPE_CHECKING = False
+ if TYPE_CHECKING:
+@@ -35,18 +37,43 @@ _SUPERSCRIPT_MAP = {
+ }
+ _SUPERSCRIPT_TRANS = str.maketrans(_SUPERSCRIPT_MAP)
+ 
+-_ORDINAL_SUFFIXES = (""th"", ""st"", ""nd"", ""rd"", ""th"", ""th"", ""th"", ""th"", ""th"", ""th"")
++_ORDINAL_SUFFIXES = {
++    ""male"": (
++        PS_(""0 (male)"", ""th""),
++        PS_(""1 (male)"", ""st""),
++        PS_(""2 (male)"", ""nd""),
++        PS_(""3 (male)"", ""rd""),
++        PS_(""4 (male)"", ""th""),
++        PS_(""5 (male)"", ""th""),
++        PS_(""6 (male)"", ""th""),
++        PS_(""7 (male)"", ""th""),
++        PS_(""8 (male)"", ""th""),
++        PS_(""9 (male)"", ""th""),
++    ),
++    ""female"": (
++        PS_(""0 (female)"", ""th""),
++        PS_(""1 (female)"", ""st""),
++        PS_(""2 (female)"", ""nd""),
++        PS_(""3 (female)"", ""rd""),
++        PS_(""4 (female)"", ""th""),
++        PS_(""5 (female)"", ""th""),
++        PS_(""6 (female)"", ""th""),
++        PS_(""7 (female)"", ""th""),
++        PS_(""8 (female)"", ""th""),
++        PS_(""9 (female)"", ""th""),
++    ),
++}
+ _APNUMBER_WORDS = (
+-    ""zero"",
+-    ""one"",
+-    ""two"",
+-    ""three"",
+-    ""four"",
+-    ""five"",
+-    ""six"",
+-    ""seven"",
+-    ""eight"",
+-    ""nine"",
++    N_(""zero""),
++    N_(""one""),
++    N_(""two""),
++    N_(""three""),
++    N_(""four""),
++    N_(""five""),
++    N_(""six""),
++    N_(""seven""),
++    N_(""eight""),
++    N_(""nine""),
+ )
+ 
+ 
+@@ -110,7 +137,7 @@ def ordinal(value: NumberOrString, gender: str = ""male"") -> str:
+         return str(value)
+     gender = ""male"" if gender == ""male"" else ""female""
+     digit = 0 if value % 100 in (11, 12, 13) else value % 10
+-    return f""{value}{P_(f'{digit} ({gender})', _ORDINAL_SUFFIXES[digit])}""
++    return f""{value}{P_(*_ORDINAL_SUFFIXES[gender][digit])}""
+ 
+ 
+ def intcomma(value: NumberOrString, ndigits: int | None = None) -> str:
+diff --git a/tests/test_i18n.py b/tests/test_i18n.py
+index 98be485..20db617 100644
+--- a/tests/test_i18n.py
++++ b/tests/test_i18n.py
+@@ -3,20 +3,72 @@
+ from __future__ import annotations
+ 
+ import datetime as dt
++import gettext
+ import importlib
+-import pathlib
++import shutil
++import subprocess
++from pathlib import Path
+ 
+ import pytest
+ from freezegun import freeze_time
+ 
+ import humanize
+ 
+-LOCALE_DIR = pathlib.Path(humanize.i18n.__file__).parent / ""locale""
++LOCALE_DIR = Path(humanize.i18n.__file__).parent / ""locale""
+ 
+ with freeze_time(""2020-02-02""):
+     NOW = dt.datetime.now(tz=dt.timezone.utc)
+ 
+ 
++@pytest.mark.parametrize(""locale, one"", [(""de_DE"", ""eins""), (""fr_FR"", ""un"")])
++def test_update_translations(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locale: str, one: str
++) -> None:
++    for command in (""bash"", ""xgettext"", ""msgmerge"", ""msgfmt""):
++        if shutil.which(command) is None:
++            pytest.skip(f""Translation updates require {command}"")
++
++    root = Path(__file__).resolve().parents[1]
++    source = root / ""src"" / ""humanize""
++    destination = tmp_path / ""src"" / ""humanize""
++    messages = destination / ""locale"" / locale / ""LC_MESSAGES""
++    messages.mkdir(parents=True)
++    for path in source.glob(""*.py""):
++        shutil.copy2(path, destination)
++    catalog = messages / ""humanize.po""
++    shutil.copy2(source / ""locale"" / locale / ""LC_MESSAGES"" / ""humanize.po"", catalog)
++    binary = catalog.with_suffix("".mo"")
++    subprocess.run([""msgfmt"", ""--check"", ""-o"", str(binary), str(catalog)], check=True)
++
++    results = []
++    try:
++        for updated in (False, True):
++            if updated:
++                subprocess.run(
++                    [""bash"", str(root / ""scripts"" / ""update-translations.sh"")],
++                    cwd=tmp_path,
++                    check=True,
++                )
++            with binary.open(""rb"") as stream:
++                translation = gettext.GNUTranslations(stream)
++            # Replace the cached catalog so the second pass uses the updated one.
++            monkeypatch.setitem(humanize.i18n._TRANSLATIONS, locale, translation)
++            humanize.activate(locale)
++            results.append(
++                [humanize.apnumber(value) for value in range(10)]
++                + [
++                    humanize.ordinal(value, gender=gender)
++                    for gender in (""male"", ""female"")
++                    for value in range(10)
++                ]
++            )
++    finally:
++        humanize.deactivate()
++
++    assert results[0][1] == one
++    assert results[1] == results[0]
++
++
+ @freeze_time(""2020-02-02"")
+ def test_i18n() -> None:
+     three_seconds = NOW - dt.timedelta(seconds=3)
+",,True,Translation catalog regeneration requires gettext tools not present in the default sandbox image.

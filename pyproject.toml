@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any-bench"
-version = "0.4.0"
+version = "0.4.1"
 description = "Build private repository coding benchmarks and run them in Docker"
 readme = "README.md"
 license = "MIT"

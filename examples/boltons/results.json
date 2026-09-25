@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/mahmoud/boltons.git",
+  "cases": [
+    {
+      "case_id": "boltons-0d0ecf50-4e5faa3d7e40",
+      "base_commit": "961dcff3f42e73b245aef65e377fe82763b257bb",
+      "target_commit": "4e5faa3d7e4008d89e0d8bf1ea87b6d9a061a16d",
+      "commit_subject": "Fix spooled stream write compatibility and backwards text seeks (#513)",
+      "changed_files": [
+        "boltons/ioutils.py",
+        "tests/test_ioutils.py"
+      ],
+      "validation": "verified",
+      "validation_reason": "",
+      "base_test_passed": false,
+      "reference_test_passed": true,
+      "candidate": {
+        "model_id": "qwen/qwen3.8-27b",
+        "status": "exhausted",
+        "stop_reason": "token_limit",
+        "test_passed": true,
+        "judge_score": null,
+        "prompt_tokens": 250169,
+        "completion_tokens": 5373,
+        "cached_prompt_tokens": 199136,
+        "tool_calls": 17,
+        "seconds": 114.81642982500034
+      }
+    },
+    {
+      "case_id": "boltons-0d0ecf50-1216b467c10b",
+      "base_commit": "8bb31ba90e574daddbf0d7a2dc658398dc141e38",
+      "target_commit": "1216b467c10b852d08aa6895c80b6b9ec8f990d8",
+      "commit_subject": "Complete September PR sweep for 26.2.0 (#481)",
+      "changed_files": [
+        "CHANGELOG.md",
+        "boltons/cacheutils.py",
+        "boltons/jsonutils.py",
+        "boltons/strutils.py",
+        "boltons/urlutils.py",
+        "tests/test_cacheutils.py",
+        "tests/test_jsonutils.py",
+        "tests/test_namedutils.py",
+        "tests/test_statsutils.py",
+        "tests/test_strutils.py",
+        "tests/test_urlutils.py"
+      ],
+      "validation": "verified",
+      "validation_reason": "",
+      "base_test_passed": false,
+      "reference_test_passed": true,
+      "candidate": {
+        "model_id": "qwen/qwen3.8-27b",
+        "status": "exhausted",
+        "stop_reason": "token_limit",
+        "test_passed": false,
+        "judge_score": null,
+        "prompt_tokens": 282919,
+        "completion_tokens": 2714,
+        "cached_prompt_tokens": 144256,
+        "tool_calls": 22,
+        "seconds": 99.80524371400043
+      }
+    }
+  ]
+}

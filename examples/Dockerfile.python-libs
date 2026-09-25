@@ -1,0 +1,10 @@
+FROM anybench-sandbox:latest
+RUN python -m pip install --no-cache-dir pytest==8.4.2 freezegun==1.5.5
+RUN mkdir -p /opt/anybench && printf '%s\n' \
+    'import sys' \
+    'import types' \
+    'version = types.ModuleType("humanize._version")' \
+    'version.__version__ = "0+anybench"' \
+    'sys.modules.setdefault("humanize._version", version)' \
+    > /opt/anybench/sitecustomize.py
+ENV PYTHONPATH=/opt/anybench:/repo/src:/repo

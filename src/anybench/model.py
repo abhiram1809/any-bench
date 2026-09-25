@@ -90,6 +90,7 @@ class ModelConfig:
     env: dict[str, str] = field(default_factory=dict)
     harness_timeout: int = 1800
     prompt_cache: bool = True
+    reasoning_effort: str | None = None
     context_profile: str = "enhanced"
     context_window_tokens: int = 200_000
     role: str = "candidate"
@@ -117,10 +118,16 @@ class ModelConfig:
             raise ValueError("name and model are required")
         if self.role not in {"candidate", "builder", "judge"}:
             raise ValueError("role must be candidate, builder, or judge")
+        if self.reasoning_effort is not None and self.reasoning_effort not in {
+                "none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("reasoning_effort must be a supported effort level")
         if self.api not in {"chat_completions", "responses", "anthropic"}:
             raise ValueError("Unknown model API")
         if self.harness not in {"anybench", "codex", "claude", "opencode", "custom"}:
             raise ValueError("Unknown harness")
+        if self.reasoning_effort is not None and (self.api != "chat_completions" or
+                                                  self.harness != "anybench"):
+            raise ValueError("reasoning_effort requires the built-in Chat Completions harness")
         if self.harness == "custom" and not self.command:
             raise ValueError("Custom harness requires command")
         if self.max_output_tokens < 1:

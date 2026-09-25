@@ -14,6 +14,13 @@ import time
 LIMIT = 2_000_000
 
 
+def _ranges(value):
+    """Accept a single inclusive pair as well as a list of pairs."""
+    if isinstance(value, list) and len(value) == 2 and all(type(n) is int for n in value):
+        return [value]
+    return value
+
+
 def safe_path(root: Path, value: str) -> Path:
     requested = Path(value)
     if requested.is_absolute():
@@ -118,7 +125,7 @@ def execute(root: Path, operation: str, arguments: dict) -> dict:
         return {'path': relative}
     if operation in {'Read', 'Write', 'Edit'}:
         if operation == 'Read':
-            ranges = arguments.get('lines_range')
+            ranges = _ranges(arguments.get('lines_range'))
             if ranges is None and path.stat().st_size > LIMIT:
                 raise ValueError('File exceeds 2 MB tool limit; request a line range')
             if ranges is not None:
@@ -152,7 +159,7 @@ def execute(root: Path, operation: str, arguments: dict) -> dict:
         content = arguments['content']
         if not isinstance(content, str) or len(content.encode()) > LIMIT:
             raise ValueError('Content must be text of at most 2 MB')
-        ranges = arguments.get('line_range')
+        ranges = _ranges(arguments.get('line_range'))
         if operation == 'Edit' and ranges is None:
             raise ValueError('Edit requires line_range')
         if ranges is not None:
@@ -162,6 +169,8 @@ def execute(root: Path, operation: str, arguments: dict) -> dict:
             start, end = ranges[0]
             if any(type(n) is not int for n in (start, end)) or not 1 <= start <= end <= len(lines):
                 raise ValueError('Invalid edit range')
+            if content and not content.endswith('\n') and (end < len(lines) or lines[end - 1].endswith('\n')):
+                content += '\n'
             content = ''.join(lines[:start - 1]) + content + ''.join(lines[end:])
         if len(content.encode()) > LIMIT:
             raise ValueError('Resulting file exceeds 2 MB')
@@ -170,8 +179,10 @@ def execute(root: Path, operation: str, arguments: dict) -> dict:
         return {'output': f'Wrote {relative}', 'path': relative}
     if operation not in {'List', 'Search'}:
         raise ValueError(f'Unknown tool: {operation}')
-    if not path.is_dir():
+    if operation == 'List' and not path.is_dir():
         raise ValueError('path must be a directory')
+    if operation == 'Search' and not (path.is_dir() or path.is_file()):
+        raise ValueError('path must be a file or directory')
     query = arguments.get('query')
     if operation == 'Search' and (not isinstance(query, str) or not query):
         raise ValueError('Search requires a nonempty literal query')
@@ -180,7 +191,8 @@ def execute(root: Path, operation: str, arguments: dict) -> dict:
     visited = 0
     truncated = False
     recursive = arguments.get('recursive', operation == 'Search')
-    for folder, directories, files in os.walk(path, followlinks=False):
+    locations = [(str(path.parent), [], [path.name])] if path.is_file() else os.walk(path, followlinks=False)
+    for folder, directories, files in locations:
         directories[:] = sorted(d for d in directories if d != '.git' and
                                 not (Path(folder) / d).is_symlink())
         names = sorted(directories + files) if operation == 'List' else sorted(files)

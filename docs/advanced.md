@@ -46,6 +46,7 @@ anybench --help
 If you prefer not to install the package, replace `anybench` in the commands below with `PYTHONPATH=src python3 -m anybench.cli`. Run the CLI as a user with Docker access. Running the entire CLI with `sudo` also makes its containers run as root.
 
 The default image supports basic Python tasks. For another language or repository-specific dependencies, build an image and pass `--image your-image:tag`. It must contain `sh`, `sleep`, `cp`, `mkdir`, `cat`, `grep`, `wc`, and `jq`, plus the tools required by that repository's tests. For multiple repositories with different images, pass `--image-map .anybench/images.json`. That JSON file maps each dataset `repository` value exactly to an image name, for example `{ "/absolute/path/to/repo": "custom-image:latest" }`.
+The default image does not include `pytest` or repository-specific build dependencies. Use the same custom image for test validation and candidate runs; verified cases record the image ID.
 
 ## 2. Configure the model endpoints
 
@@ -72,6 +73,7 @@ If you want optional model judging, create a separate `.anybench/judge.json` wit
 Each file is a JSON array. `api_key_env` is the **environment variable name**, not the key. Set those variables with your shell or secret manager before running. In Bash, `read -rsp 'Builder API key: ' BUILDER_API_KEY; echo; export BUILDER_API_KEY` prompts without echoing the value. Repeat for `CANDIDATE_API_KEY`.
 
 By default, endpoints use OpenAI-compatible Chat Completions and tool calls. Set `"api":"responses"` for an OpenAI-compatible Responses endpoint, or `"api":"anthropic"` for an Anthropic-compatible Messages endpoint. Each builder, judge, and candidate entry can choose its own API, endpoint, and key variable. Anthropic entries can set `"max_output_tokens":4096`; this is the default. Set `"prompt_cache":false` if an Anthropic-compatible endpoint does not implement Anthropic cache controls. Use HTTPS; plain HTTP is accepted only for `localhost` or loopback IPs. Redirects are blocked, so set `base_url` to the provider's final API URL. Private repository content is sent to the configured model providers: the builder sees commit context and patches, the candidate can request files, and the judge sees reference and candidate patches. Use providers authorized to receive that code.
+Built-in Chat Completions entries can set `"reasoning_effort":"low"` when supported by the model. OpenRouter Chat Completions calls use a stable session ID per model within one process for cache routing; reports record cached prompt tokens when the endpoint supplies them. `max_total_tokens` and `attempt_timeout` bound built-in candidate attempts.
 
 ### Built-in context orchestration
 

@@ -231,6 +231,10 @@ class Sandbox:
                    "--tmpfs", "/work:rw,exec,nosuid,nodev,size=256m",
                    "--env", "HOME=/tmp",
                    "--env", "TMPDIR=/work", "--env", "GOTMPDIR=/work",
+                   "--env", "PYTHONDONTWRITEBYTECODE=1",
+                   "--env", "GIT_CONFIG_COUNT=1",
+                   "--env", "GIT_CONFIG_KEY_0=safe.directory",
+                   "--env", "GIT_CONFIG_VALUE_0=/repo",
                    "--user", f"{os.getuid()}:{os.getgid()}", "--workdir", "/repo",
                    "--mount", f"type=bind,src={self.root},dst=/seed,readonly"]
         if self.evaluation_patch is not None:
@@ -443,7 +447,13 @@ class Sandbox:
     def diff(self) -> str:
         if not self.root:
             raise RuntimeError("Sandbox is not running")
-        git(self.root, "add", "-N", "--force", ".")
+        # Include intentionally ignored source files, but keep tool-generated
+        # caches out of the candidate patch and judge context.
+        generated = (".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache",
+                     ".tox", ".nox", ".venv")
+        excludes = [f":(exclude,glob)**/{name}/**" for name in generated]
+        excludes += [":(exclude,glob)**/*.pyc", ":(exclude,glob)**/.coverage*"]
+        git(self.root, "add", "-N", "--force", "--", ".", *excludes)
         return git(self.root, "diff", "--binary", "--no-textconv", "--no-ext-diff",
                    "HEAD", "--")
 

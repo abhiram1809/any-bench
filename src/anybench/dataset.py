@@ -33,13 +33,18 @@ BUILDER_TOOLS = [
 
 
 def analyze_commit(client: ChatClient, repo: Path, parent: str, commit: str,
-                   prompt: str) -> dict:
+                   prompt: str, use_tools: bool = True) -> dict:
     messages = [{"role": "user", "content": prompt}]
-    for _ in range(8):
-        reply = client.complete(messages, BUILDER_TOOLS)
+    for turn in range(8):
+        # The final call must ask for a decision, even when inspection keeps
+        # producing tool requests. Small complete patches need no tools at all.
+        tools = BUILDER_TOOLS if use_tools and turn < 4 else None
+        reply = client.complete(messages, tools)
         message = reply.message
         messages.append(message)
         tool_calls = message.get("tool_calls") or []
+        if tool_calls and tools is None:
+            raise ValueError(f"Dataset agent requested unavailable tools for {commit}")
         if not tool_calls:
             raw = message.get("content") or ""
             return parse_json_object(raw)
@@ -178,13 +183,18 @@ def _case_from_commit(client: ChatClient, repo: Path, source: str,
         "behavior without revealing the solution. Use an empty test_command when no "
         "safe, repository-local check can be inferred. A test_command must run on both "
         "the parent and target snapshots without depending on files introduced only "
-        "by the target. It should fail on the parent and pass on the target. "
+        "by the target. Never select tests or test names added by the target commit: "
+        "the evaluator restores the parent's tests. Prefer a short self-contained "
+        "assertion using existing code and only tools present in the sandbox. The "
+        "command must be valid shell and Python syntax, fail on the parent, and pass "
+        "on the target. If that cannot be established, leave test_command empty. "
         "Mark external_validation true "
         "for cases needing services or conditions unavailable in a local sandbox.\n\n"
         f"Commit message:\n{context[:8000]}\nChanged files:\n{changed[:8000]}\n"
         f"Patch ({len(diff)} characters; excerpt truncated={len(diff) > 60000}; use ReadPatch):\n{diff[:60000]}"
     )
-    data = analyze_commit(client, repo, parent, commit, prompt)
+    data = analyze_commit(client, repo, parent, commit, prompt,
+                          use_tools=len(diff) > 60000)
     return case_from_annotation(repo, source, identifier, commit, data,
                                 parent=parent, diff=diff)
 

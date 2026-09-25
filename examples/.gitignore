@@ -1,0 +1,4 @@
+!*.csv
+!candidate.json
+*.csv.lock
+*.csv.metadata.json

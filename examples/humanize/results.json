@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/python-humanize/humanize.git",
+  "cases": [
+    {
+      "case_id": "python-humanize-881ec53d-392aef707c0e",
+      "base_commit": "ca892b368a535a79cc5e2181d052245b94fd6652",
+      "target_commit": "392aef707c0e74341ab4a51420984e9ea6b566c5",
+      "commit_subject": "Fix `naturaldelta` truncating years instead of rounding (#295)",
+      "changed_files": [
+        "src/humanize/time.py",
+        "tests/test_time.py"
+      ],
+      "validation": "verified",
+      "validation_reason": "",
+      "base_test_passed": false,
+      "reference_test_passed": true,
+      "candidate": {
+        "model_id": "qwen/qwen3.8-27b",
+        "status": "completed",
+        "stop_reason": "completed",
+        "test_passed": true,
+        "judge_score": 0.9,
+        "prompt_tokens": 178281,
+        "completion_tokens": 4174,
+        "cached_prompt_tokens": 95648,
+        "tool_calls": 16,
+        "seconds": 110.36792972999956
+      }
+    },
+    {
+      "case_id": "python-humanize-881ec53d-ca892b368a53",
+      "base_commit": "f971127ce7e7770d3ff5be05cfc484bdf9302e04",
+      "target_commit": "ca892b368a535a79cc5e2181d052245b94fd6652",
+      "commit_subject": "Fix `intword()` rounding carry for very large numbers (#346)",
+      "changed_files": [
+        "src/humanize/number.py",
+        "tests/test_number.py"
+      ],
+      "validation": "verified",
+      "validation_reason": "",
+      "base_test_passed": false,
+      "reference_test_passed": true,
+      "candidate": {
+        "model_id": "qwen/qwen3.8-27b",
+        "status": "completed",
+        "stop_reason": "completed",
+        "test_passed": true,
+        "judge_score": 0.95,
+        "prompt_tokens": 239806,
+        "completion_tokens": 4757,
+        "cached_prompt_tokens": 158368,
+        "tool_calls": 16,
+        "seconds": 106.71683251600007
+      }
+    },
+    {
+      "case_id": "python-humanize-881ec53d-ffdf407fdfe1",
+      "base_commit": "bada0f88b4d115b96d94db1fe73b20579e84fc14",
+      "target_commit": "ffdf407fdfe1a5738159b989eb2df190ed780448",
+      "commit_subject": "Support general iterables in `natural_list` (#381)",
+      "changed_files": [
+        "src/humanize/lists.py",
+        "tests/test_lists.py"
+      ],
+      "validation": "verified",
+      "validation_reason": "",
+      "base_test_passed": false,
+      "reference_test_passed": true,
+      "candidate": {
+        "model_id": "qwen/qwen3.8-27b",
+        "status": "completed",
+        "stop_reason": "completed",
+        "test_passed": true,
+        "judge_score": 0.85,
+        "prompt_tokens": 36808,
+        "completion_tokens": 1691,
+        "cached_prompt_tokens": 1568,
+        "tool_calls": 10,
+        "seconds": 63.74059873999977
+      }
+    },
+    {
+      "case_id": "python-humanize-881ec53d-bada0f88b4d1",
+      "base_commit": "e46732ed235019682b7bfc6c44443e247b332e95",
+      "target_commit": "bada0f88b4d115b96d94db1fe73b20579e84fc14",
+      "commit_subject": "Fix translation loss during catalog updates (#391)",
+      "changed_files": [
+        "README.md",
+        "scripts/update-translations.sh",
+        "src/humanize/i18n.py",
+        "src/humanize/number.py",
+        "tests/test_i18n.py"
+      ],
+      "validation": "skipped",
+      "validation_reason": "Translation catalog regeneration requires gettext tools not present in the default sandbox image.",
+      "base_test_passed": null,
+      "reference_test_passed": null
+    }
+  ]
+}

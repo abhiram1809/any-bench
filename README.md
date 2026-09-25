@@ -2,6 +2,8 @@
 
 AnyBench turns the Git history of repositories you supply into coding problems, verifies them in Docker, runs coding models, and creates an HTML report. You do not need to know the repository's language or write benchmark cases yourself.
 
+See the [Humanize and Boltons examples](examples/README.md) for a measured run on public library commits, including reviewed datasets and model outcomes.
+
 ## First run
 
 Install Python 3.11+, Git, and Docker, then start the Docker daemon. Install AnyBench:

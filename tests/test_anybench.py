@@ -82,6 +82,26 @@ class DatasetTests(unittest.TestCase):
             self.assertEqual(result["problem_statement"], "Fix")
             self.assertIn("value = 1\n", client.calls[1][0][-1]["content"])
 
+    def test_builder_forces_decision_after_bounded_inspection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "app.py").write_text("value = 1\n")
+            commit(repo, "Initial")
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                           text=True).strip()
+            (repo / "app.py").write_text("value = 2\n")
+            commit(repo, "Update")
+            target = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                             text=True).strip()
+            request = {"tool_calls": [{"id": "1", "function": {"name": "RecentCommits",
+                        "arguments": "{}"}}]}
+            client = StubClient(*(request for _ in range(4)),
+                                {"content": '{"eligible":false}'})
+            self.assertFalse(analyze_commit(client, repo, base, target, "Analyze")["eligible"])
+            self.assertTrue(all(tools for _, tools in client.calls[:4]))
+            self.assertIsNone(client.calls[4][1])
+
     def test_build_and_csv_round_trip(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"
@@ -188,9 +208,13 @@ class DatasetTests(unittest.TestCase):
             sandbox.root = root
             sandbox.write("generated.py", "value = 2\n")
             sandbox.write("new.log", "a new file\n")
+            cache = root / ".pytest_cache" / "v"
+            cache.mkdir(parents=True)
+            (cache / "nodeids").write_text("generated\n")
             diff = sandbox.diff()
             self.assertIn("+value = 2", diff)
             self.assertIn("new.log", diff)
+            self.assertNotIn(".pytest_cache", diff)
 
 
 class ClientTests(unittest.TestCase):
@@ -218,6 +242,35 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(seen["body"]["model"], "model-x")
         self.assertEqual((reply.prompt_tokens, reply.completion_tokens), (3, 2))
 
+    def test_openrouter_uses_stable_session_for_cache_routing(self):
+        config = ModelConfig("provider", "https://openrouter.ai/api/v1", "model-x", "KEY")
+        client = ChatClient(config)
+        bodies = []
+        def fake_open(request, timeout):
+            bodies.append(json.loads(request.data))
+            return io.BytesIO(b'{"choices":[{"message":{"content":"done"}}]}')
+        opener = Mock()
+        opener.open.side_effect = fake_open
+        with patch.dict(os.environ, {"KEY": "test-secret"}), \
+             patch("anybench.llm.urllib.request.build_opener", return_value=opener):
+            client.complete([{"role": "user", "content": "hello"}])
+            client.complete([{"role": "user", "content": "hello again"}])
+        self.assertEqual(bodies[0]["session_id"], bodies[1]["session_id"])
+        self.assertTrue(bodies[0]["session_id"])
+        self.assertEqual(client.session_id, ChatClient(config).session_id)
+
+    def test_chat_reasoning_effort_is_opt_in(self):
+        config = ModelConfig("provider", "https://example.test/v1", "model", "KEY",
+                             reasoning_effort="low")
+        self.assertEqual(ChatClient(config)._payload([{"role": "user", "content": "hi"}], None)
+                         ["reasoning_effort"], "low")
+        with self.assertRaisesRegex(ValueError, "reasoning_effort"):
+            ModelConfig("provider", "https://example.test/v1", "model", "KEY",
+                        reasoning_effort="extreme")
+        with self.assertRaisesRegex(ValueError, "reasoning_effort"):
+            ModelConfig("provider", "https://example.test/v1", "model", "KEY",
+                        api="responses", reasoning_effort="low")
+
     def test_retries_throttled_request(self):
         config = ModelConfig("provider", "https://example.test/v1", "model-x",
                              "TEST_API_KEY", max_retries=1)
@@ -233,6 +286,17 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(reply.message["content"], "done")
         self.assertEqual(opener.open.call_count, 2)
         sleep.assert_called_once_with(0)
+
+    def test_timeout_with_unknown_billing_is_not_retried(self):
+        config = ModelConfig("provider", "https://example.test/v1", "model-x",
+                             "TEST_API_KEY", max_retries=2)
+        opener = Mock()
+        opener.open.side_effect = urllib.error.URLError(TimeoutError("timed out"))
+        with patch.dict(os.environ, {"TEST_API_KEY": "test-secret"}), \
+             patch("anybench.llm.urllib.request.build_opener", return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, "billing state unknown"):
+                ChatClient(config).complete([{"role": "user", "content": "hello"}])
+        self.assertEqual(opener.open.call_count, 1)
 
     def test_remote_http_is_rejected_but_loopback_http_is_allowed(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
@@ -535,6 +599,7 @@ class DockerToolIntegrationTests(unittest.TestCase):
             case = Case("c", str(repo), base, target, "Fix", "", gold_diff,
                         test_command="grep -q TWO file.txt")
             with Sandbox(case) as sandbox:
+                self.assertEqual(sandbox.command(["git", "status", "--porcelain"]).returncode, 0)
                 self.assertEqual(sandbox.read("file.txt", [[1, 1]]), "one\n")
                 sandbox.edit("file.txt", "TWO\n", [[2, 2]])
                 sandbox.write("new.json", '{"a":1}\n')
@@ -880,6 +945,22 @@ class ContextOrchestrationTests(unittest.TestCase):
         result = execute(self.root, 'Read', {'file_path': 'large', 'lines_range': [[409999, 410000]]})
         self.assertIn('410000: line', result['output'])
         self.assertNotIn('409998: line', result['output'])
+
+    def test_single_flat_line_range_is_accepted(self):
+        from anybench.workspace_tool import execute
+        (self.root / 'source.py').write_text('one\ntwo\nthree\n')
+        result = execute(self.root, 'Read', {'file_path': 'source.py', 'lines_range': [2, 3]})
+        self.assertIn('2: two', result['output'])
+        self.assertNotIn('1: one', result['output'])
+        execute(self.root, 'Edit', {'file_path': 'source.py', 'line_range': [2, 2],
+                                    'content': 'changed'})
+        self.assertEqual((self.root / 'source.py').read_text(), 'one\nchanged\nthree\n')
+
+    def test_search_accepts_file_path(self):
+        from anybench.workspace_tool import execute
+        (self.root / 'source.py').write_text('one\nneedle\nthree\n')
+        result = execute(self.root, 'Search', {'path': 'source.py', 'query': 'needle'})
+        self.assertEqual(result['output'], 'source.py:2: needle\n')
 
     def test_oversized_read_is_an_explicit_error(self):
         (self.root / 'large').write_text('large content\n' * 5000)

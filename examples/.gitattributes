@@ -1,0 +1,2 @@
+# Reference patches inside CSV fields preserve the source commit's whitespace.
+*.csv -whitespace

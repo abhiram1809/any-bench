@@ -28,6 +28,8 @@ class ProtocolAdapter:
             payload = {"model": self.config.model, "messages": messages,
                        "temperature": self.config.temperature}
             payload["max_tokens"] = self.config.max_output_tokens
+            if self.config.reasoning_effort is not None:
+                payload["reasoning_effort"] = self.config.reasoning_effort
             if tools:
                 payload["tools"] = tools
             return payload

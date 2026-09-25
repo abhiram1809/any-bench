@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from .model import ModelConfig
 from .providers import ProtocolAdapter, Reply
 from .privacy import redact, redact_value
 from .execution import CANCELLED
+
+
+_ROUTER_RUN_ID = uuid4().hex
 
 
 class ContextLimitError(RuntimeError):
@@ -57,6 +64,10 @@ class ChatClient:
         self.events: list[dict] = []
         self.usage_available = True
         self.started = time.monotonic()
+        model_tag = hashlib.sha256(config.model.encode()).hexdigest()[:12]
+        self.session_id = (f"anybench-{_ROUTER_RUN_ID}-{model_tag}"
+                           if config.api == "chat_completions" and
+                           urlsplit(config.base_url).hostname == "openrouter.ai" else None)
 
     def complete(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
         if CANCELLED.is_set():
@@ -76,6 +87,8 @@ class ChatClient:
         if not endpoint.endswith(suffix):
             endpoint += suffix
         payload = self._payload(messages, tools)
+        if self.session_id is not None:
+            payload["session_id"] = self.session_id
         headers = {"Content-Type": "application/json"}
         if api == "anthropic":
             headers.update({"anthropic-version": "2023-06-01"})
@@ -91,9 +104,28 @@ class ChatClient:
         for attempt in range(self.config.max_retries + 1):
             try:
                 timeout = min(self.timeout, max(1, self.config.attempt_timeout - (time.monotonic() - self.started))) if self.config.attempt_timeout else self.timeout
+                deadline = time.monotonic() + timeout
                 with opener.open(request, timeout=timeout) as response:
-                    data = json.load(response)
+                    parts = []
+                    total = 0
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("LLM API response timed out")
+                        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+                        if sock is not None:
+                            sock.settimeout(remaining)
+                        chunk = response.read(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > 16_000_000:
+                            raise ValueError("LLM API response exceeds 16 MB")
+                        parts.append(chunk)
+                    data = json.loads(b"".join(parts))
                 break
+            except (TimeoutError, socket.timeout) as exc:
+                raise RuntimeError("LLM API response timed out; billing state unknown") from exc
             except urllib.error.HTTPError as exc:
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == self.config.max_retries:
                     detail = redact(exc.read(2048).decode(errors="replace"), self.config)
@@ -112,6 +144,8 @@ class ChatClient:
                 time.sleep(max(0, min(delay, 30)))
                 self.events.append({"retry": attempt + 1, "http_status": exc.code, "delay": max(0, min(delay, 30))})
             except urllib.error.URLError as exc:
+                if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+                    raise RuntimeError("LLM API response timed out; billing state unknown") from exc
                 if attempt == self.config.max_retries:
                     raise RuntimeError(f"LLM API connection failed: {exc.reason}") from exc
                 time.sleep(2 ** attempt)
