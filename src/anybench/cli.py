@@ -127,6 +127,15 @@ def _summary(records: list, cases: list | None = None) -> dict:
 def _main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="anybench")
     commands = parser.add_subparsers(dest="command", required=True)
+    guided = commands.add_parser("start", help="Set up and run a benchmark from repositories")
+    guided.add_argument("repositories", nargs="*")
+    guided.add_argument("--config", type=Path, default=Path(".anybench/config.json"))
+    guided.add_argument("--commits", type=int)
+    guided.add_argument("--max-problems", type=int)
+    guided.add_argument("--resume", type=Path, metavar="SESSION")
+    setup = commands.add_parser("configure", help="Add or edit repositories and model endpoints")
+    setup.add_argument("repositories", nargs="*")
+    setup.add_argument("--config", type=Path, default=Path(".anybench/config.json"))
     build = commands.add_parser("build", help="Generate cases from historical commits")
     build.add_argument("repositories", nargs="+")
     build.add_argument("--models", type=Path, required=True)
@@ -215,7 +224,13 @@ def _main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if dispatch(args, parser):
         return
-    if args.command == "build":
+    if args.command == "configure":
+        from .guided import configure
+        configure(args.config, args.repositories)
+    elif args.command == "start":
+        from .guided import start
+        start(args.repositories, args.config, args.commits, args.max_problems, args.resume)
+    elif args.command == "build":
         if not _distinct_paths(args.models, args.output):
             parser.error("Build model config and output paths must differ")
         configs = _configs(args.models)
