@@ -6,6 +6,8 @@ See the [Humanize and Boltons examples](examples/README.md) for a measured run o
 
 ## First run
 
+![First run: supply repositories, configure models, verify cases in Docker, then run candidates and view the report](docs/diagrams/first-run.svg)
+
 Install Python 3.11+, Git, and Docker, then start the Docker daemon. Install AnyBench:
 
 ```sh

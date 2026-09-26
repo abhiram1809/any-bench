@@ -15,6 +15,8 @@ Claude installs under `.claude/skills/anybench`; the portable form installs unde
 
 This manual host-agent example reviews the latest **50** commits and uses every verified case, one candidate attempt and concurrency **2**, and gives the enhanced candidate a **200,000-token** context window with **30 shared calls**. Host-agent case authoring needs no separate builder API key. A builder endpoint remains optional.
 
+![Manual workflow: prepare Git context, import cases, validate, run candidates, inspect the summary, and create the report](diagrams/manual-workflow.svg)
+
 ```sh
 anybench doctor --json --models .anybench/session/candidates.json --output-dir .anybench/session
 anybench prepare /path/to/repo --commits 50 --output .anybench/session/contexts.jsonl
@@ -76,6 +78,8 @@ By default, endpoints use OpenAI-compatible Chat Completions and tool calls. Set
 Built-in Chat Completions entries can set `"reasoning_effort":"low"` when supported by the model. OpenRouter Chat Completions calls use a stable session ID per model within one process for cache routing; reports record cached prompt tokens when the endpoint supplies them. `max_total_tokens` and `attempt_timeout` bound built-in candidate attempts.
 
 ### Built-in context orchestration
+
+![Enhanced candidate: repository file tools feed a bounded model context, Docker runs checks, and artifacts support context recovery](diagrams/context-tools.svg)
 
 The built-in harness defaults to `"context_profile":"enhanced"` and a **200,000-token**
 working context window. Set `context_window_tokens` per model when its endpoint has a
@@ -163,6 +167,8 @@ A custom harness uses `"harness":"custom"` and `"command":["your-cli","--headles
 
 ## 3. Build and check a dataset
 
+![Verification gate: the same test must fail on the base snapshot and pass with the reference fix](diagrams/verification-gate.svg)
+
 Supply one or more local paths or HTTPS/SSH Git URLs. For example, `anybench build /repo-a https://github.com/org/repo-b.git ...` uses both repositories. The builder reviews 50 commits per repository by default and writes each accepted case immediately:
 
 ```sh
@@ -207,6 +213,8 @@ Run `PYTHONPATH=src python3 -m unittest discover -s tests -v`. The Docker integr
 
 
 ## Multi-commit bug reconstruction (opt-in pilot)
+
+![Grouped reconstruction: select an initial fix and follow-up correction from Git history, omit the unrelated commit, then verify the grouped case](diagrams/grouped-reconstruction.svg)
 
 A bug can require an initial fix and several follow-up corrections. `--grouped`
 creates one task from selected historical fixes, even when unrelated commits lie
