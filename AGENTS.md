@@ -26,6 +26,10 @@ Python tests use `unittest`. Add focused methods named `test_<behavior>` to the 
 
 Use short, imperative commit subjects such as `Validate sandbox test commands`. In pull requests, explain the behavior changed, link an issue when applicable, and list the tests run. Include a report screenshot when changing rendered HTML.
 
+## Versioning
+
+Bump the AnyBench package version for every committed change, including documentation and other small changes. Keep `pyproject.toml` and `src/anybench/__init__.py` in sync. For a major feature or substantial behavior change, increment the middle component and reset the patch component (`y.x.z` → `y.(x+1).0`). For a minor change or fix, increment the patch component (`y.x.z` → `y.x.(z+1)`). Do not create or push a release tag unless publishing a release is explicitly requested.
+
 ## Security & Configuration
 
 Pass provider credentials through the environment variable named by `api_key_env` in model configuration; never commit keys. Keep generated datasets, attempts, and reports under the ignored `.anybench/` directory. They may contain private repository code. Review generated test commands before running them against a repository.
