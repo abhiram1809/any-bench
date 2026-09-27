@@ -30,6 +30,13 @@ class ProtocolAdapter:
             payload["max_tokens"] = self.config.max_output_tokens
             if self.config.reasoning_effort is not None:
                 payload["reasoning_effort"] = self.config.reasoning_effort
+            if self.config.reasoning_enabled is not None:
+                payload["reasoning"] = {"enabled": self.config.reasoning_enabled}
+            if self.config.provider_only or not self.config.provider_allow_fallbacks:
+                payload["provider"] = {"only": self.config.provider_only,
+                                       "allow_fallbacks": self.config.provider_allow_fallbacks}
+            if self.config.service_tier is not None:
+                payload["service_tier"] = self.config.service_tier
             if tools:
                 payload["tools"] = tools
             return payload

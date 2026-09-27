@@ -271,6 +271,32 @@ class ClientTests(unittest.TestCase):
             ModelConfig("provider", "https://example.test/v1", "model", "KEY",
                         api="responses", reasoning_effort="low")
 
+    def test_openrouter_provider_reasoning_and_tier_payload(self):
+        config = ModelConfig("luna", "https://openrouter.ai/api/v1",
+                             "openai/gpt-6-luna", "KEY", reasoning_enabled=True,
+                             provider_only=["openai/flex"],
+                             provider_allow_fallbacks=False, service_tier="flex")
+        message = {"role": "assistant", "content": "Inspecting",
+                   "reasoning_details": [{"type": "reasoning.text", "text": "step"}]}
+        payload = ChatClient(config)._payload([
+            {"role": "user", "content": "Task"}, message,
+            {"role": "user", "content": "Continue"}], None)
+        self.assertEqual(payload["reasoning"], {"enabled": True})
+        self.assertEqual(payload["provider"],
+                         {"only": ["openai/flex"], "allow_fallbacks": False})
+        self.assertEqual(payload["service_tier"], "flex")
+        self.assertEqual(payload["messages"][1]["reasoning_details"],
+                         message["reasoning_details"])
+        with self.assertRaisesRegex(ValueError, "provider_only"):
+            ModelConfig("bad", "https://openrouter.ai/api/v1", "model", "KEY",
+                        provider_only=[""])
+        self.assertEqual(ChatClient(ModelConfig(
+            "slow", "https://openrouter.ai/api/v1", "model", "KEY",
+            request_timeout=600)).timeout, 600)
+        with self.assertRaisesRegex(ValueError, "request_timeout"):
+            ModelConfig("bad", "https://openrouter.ai/api/v1", "model", "KEY",
+                        request_timeout=0)
+
     def test_retries_throttled_request(self):
         config = ModelConfig("provider", "https://example.test/v1", "model-x",
                              "TEST_API_KEY", max_retries=1)

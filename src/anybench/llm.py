@@ -56,7 +56,7 @@ class ChatClient:
 
     def __init__(self, config: ModelConfig, timeout: int = 120):
         self.config = config
-        self.timeout = timeout
+        self.timeout = config.request_timeout or timeout
         self.cached_prompt_tokens: int | None = None
         self.cache_creation_tokens: int | None = None
         self.prompt_tokens = 0

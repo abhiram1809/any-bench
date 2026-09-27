@@ -91,12 +91,17 @@ class ModelConfig:
     harness_timeout: int = 1800
     prompt_cache: bool = True
     reasoning_effort: str | None = None
+    reasoning_enabled: bool | None = None
+    provider_only: list[str] = field(default_factory=list)
+    provider_allow_fallbacks: bool = True
+    service_tier: str | None = None
     context_profile: str = "enhanced"
     context_window_tokens: int = 200_000
     role: str = "candidate"
     provider_concurrency: int | None = None
     max_total_tokens: int | None = None
     attempt_timeout: int | None = None
+    request_timeout: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.temperature) not in (int, float) or not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2:
@@ -108,7 +113,8 @@ class ModelConfig:
             raise ValueError("External harness adapters do not support temperature overrides")
         if self.harness == "opencode" and self.base_url:
             raise ValueError("Configure OpenCode endpoints inside its image; base_url is unsupported")
-        for name in ("provider_concurrency", "max_total_tokens", "attempt_timeout"):
+        for name in ("provider_concurrency", "max_total_tokens", "attempt_timeout",
+                     "request_timeout"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(f"{name} must be a positive integer")
@@ -121,6 +127,16 @@ class ModelConfig:
         if self.reasoning_effort is not None and self.reasoning_effort not in {
                 "none", "minimal", "low", "medium", "high", "xhigh", "max"}:
             raise ValueError("reasoning_effort must be a supported effort level")
+        if self.reasoning_enabled is not None and type(self.reasoning_enabled) is not bool:
+            raise ValueError("reasoning_enabled must be a boolean")
+        if (not isinstance(self.provider_only, list) or any(
+                not isinstance(provider, str) or not provider
+                for provider in self.provider_only)):
+            raise ValueError("provider_only must contain provider names")
+        if type(self.provider_allow_fallbacks) is not bool:
+            raise ValueError("provider_allow_fallbacks must be a boolean")
+        if self.service_tier is not None and self.service_tier not in {"flex", "priority"}:
+            raise ValueError("service_tier must be flex or priority")
         if self.api not in {"chat_completions", "responses", "anthropic"}:
             raise ValueError("Unknown model API")
         if self.harness not in {"anybench", "codex", "claude", "opencode", "custom"}:
@@ -128,6 +144,10 @@ class ModelConfig:
         if self.reasoning_effort is not None and (self.api != "chat_completions" or
                                                   self.harness != "anybench"):
             raise ValueError("reasoning_effort requires the built-in Chat Completions harness")
+        if (self.reasoning_enabled is not None or self.provider_only or
+                not self.provider_allow_fallbacks or self.service_tier is not None) and (
+                self.api != "chat_completions" or self.harness != "anybench"):
+            raise ValueError("OpenRouter routing options require the built-in Chat Completions harness")
         if self.harness == "custom" and not self.command:
             raise ValueError("Custom harness requires command")
         if self.max_output_tokens < 1:
