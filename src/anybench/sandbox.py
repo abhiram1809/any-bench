@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import threading
+from typing import Callable
 from pathlib import Path
 
 from .model import Case
@@ -39,7 +40,13 @@ def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000,
-                 input_text: str | None = None) -> subprocess.CompletedProcess:
+                 input_text: str | None = None,
+                 on_output: Callable[[str], None] | None = None) -> subprocess.CompletedProcess:
+    from .live import current_stage, emit, observer
+    active = observer()
+    stage = current_stage()
+    output_stream = active.output_stream(stage) if active else None
+    emit("process.started", stage, {"argv": argv, "timeout": timeout})
     stdin = tempfile.TemporaryFile() if input_text is not None else None
     if stdin is not None:
         stdin.write(input_text.encode())
@@ -73,24 +80,39 @@ def _limited_run(argv: list[str], timeout: int, limit: int = 2_000_000,
                     continue
                 if size + len(data) > limit:
                     chunks.append(data[:limit - size])
+                    if output_stream:
+                        output_stream.write(data[:limit - size].decode(errors="replace"))
+                    if on_output:
+                        on_output(data[:limit - size].decode(errors="replace"))
                     exceeded = True
                     process.kill()
                     break
                 chunks.append(data)
                 size += len(data)
+                if output_stream:
+                    output_stream.write(data.decode(errors="replace"))
+                if on_output:
+                    on_output(data.decode(errors="replace"))
             if exceeded:
                 break
         process.wait(timeout=1 if exceeded else max(0, deadline - time.monotonic()))
         output = b"".join(chunks).decode(errors="replace")
+        if output_stream:
+            output_stream.close()
         if exceeded:
             output += f"\n[tool output exceeded {limit} byte limit]"
-        return subprocess.CompletedProcess(argv, 124 if exceeded else process.returncode,
-                                           output, "")
+        emit("process.finished", stage, {"exit_code": 124 if exceeded else process.returncode,
+                                                 "seconds_limit": timeout, "bytes": size,
+                                                 "truncated": exceeded})
+        return subprocess.CompletedProcess(argv, 124 if exceeded else process.returncode, output, "")
     except (subprocess.TimeoutExpired, TimeoutError):
         process.kill()
         process.wait(timeout=1)
         error = ToolError("Run cancelled" if CANCELLED.is_set() else f"Command timed out after {timeout}s")
         error.output = b"".join(chunks).decode(errors="replace")
+        if output_stream:
+            output_stream.close()
+        emit("process.failed", stage, {"error": str(error)})
         raise error
     finally:
         selector.close()
@@ -261,6 +283,10 @@ class Sandbox:
             self.__exit__(None, None, None)
             raise RuntimeError(f"Docker failed: {started.stderr.strip()}")
         self.container = started.stdout.strip()
+        from .live import observer
+        if observer():
+            observer().register_container(self.container,
+                                          "evaluation" if self.evaluation_patch is not None else "candidate")
         if self.evaluation_patch is not None:
             return self
         copied = _run(["docker", "exec", self.container, "cp", "-R", "/seed/.", "/repo/"])
@@ -311,6 +337,9 @@ class Sandbox:
             if self.container:
                 _run(["docker", "rm", "-f", self.container], timeout=30)
         finally:
+            from .live import observer
+            if self.container and observer():
+                observer().unregister_container(self.container)
             self.container = None
             if self._tmp:
                 self._tmp.cleanup()
@@ -384,10 +413,12 @@ class Sandbox:
         return self.write(file_path, content, line_range)
 
     def command(self, argv: list[str], timeout: int = 60,
-                limit: int = 2_000_000) -> subprocess.CompletedProcess:
+                limit: int = 2_000_000,
+                on_output: Callable[[str], None] | None = None) -> subprocess.CompletedProcess:
         if not self.container:
             raise RuntimeError("Sandbox is not running")
-        return _limited_run(["docker", "exec", self.container, *argv], timeout, limit)
+        return _limited_run(["docker", "exec", self.container, *argv], timeout, limit,
+                            on_output=on_output)
 
     def enhanced_tool(self, operation: str, arguments: dict) -> dict:
         """All enhanced tools operate on the live container checkout."""

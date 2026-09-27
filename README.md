@@ -39,6 +39,19 @@ anybench start --resume .anybench/runs/SESSION_NAME
 
 If a model call was interrupted with unknown billing state, AnyBench stops and asks for a new session rather than silently paying for it again.
 
+## Experimental live workspace
+
+Install the optional localhost workspace and open it with:
+
+```sh
+python -m pip install 'any-bench[studio]'
+anybench studio
+```
+
+Studio shows the full builder → environment → verification → candidate → evaluation → judge → report pipeline as a live whiteboard. Select a stage, problem, or attempt to inspect prompts, tools, Docker activity, logs, tests, timing, and scores. Start a guided run in the browser, or add `--live` to `anybench start`, `build`, `validate`, `run`, or `evaluate` to watch a CLI run. Existing CLI workflows work without the Studio extra.
+
+While a run is active, Studio can adjust candidate concurrency, pause new work, resume, or stop gracefully. Runtime concurrency changes are marked in the report so they are not presented as fixed-load comparisons. See [Studio details](docs/studio.md) for controls, data visibility, and safe resume behavior.
+
 ## Models and API keys
 
 The wizard recommends an **environment variable name** for each credential, such as `OPENAI_API_KEY`. Set it in your shell before starting. You can also enter a key at a hidden prompt for the current run or save a literal `api_key` in the private `.anybench/config.json` file. Saved configs use `0600` permissions and `.anybench/` is Git-ignored. Literal keys are excluded from run manifests, reports, and generated model files. To edit repositories or add, edit, and remove models later, run:

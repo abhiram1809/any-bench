@@ -4,6 +4,10 @@ __pycache__/
 build/
 dist/
 .venv/
+node_modules/
+*.tsbuildinfo
+test-results/
+playwright-report/
 .anybench/
 *.csv
 *.jsonl

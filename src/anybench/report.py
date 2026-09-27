@@ -12,14 +12,21 @@ from .model import RunRecord, _private_opener
 
 def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
            manifest: dict | None = None, rates: dict | None = None,
-           aggregate_only: bool = False, include_private: bool = False) -> dict:
+           aggregate_only: bool = False, include_private: bool = False,
+           variable_groups: set[tuple[str, int]] | None = None) -> dict:
     metrics = summary(records, cases, manifest, rates)
     escape = lambda value: html.escape(str(value) if value is not None else 'N/A')
     percent = lambda value: f'{value:.1%}' if value is not None else 'N/A'
     number = lambda value: f'{value:.1f}' if value is not None else 'N/A'
     groups = metrics['groups']
+    variable_groups = variable_groups or set()
+    for group in groups:
+        if (group['model'], group['concurrency']) in variable_groups:
+            group['variable_concurrency'] = True
     baselines = {}
     for group in groups:
+        if group.get('variable_concurrency'):
+            continue
         identity = (group['model'], group['harness'], group['profile'], group['model_id'])
         previous = baselines.get(identity)
         if previous is None or group['concurrency'] < previous['concurrency']:
@@ -30,9 +37,10 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
         label = f"{group['model']} ({group['harness']}) [{group['profile']}]"
         if group['context_window_tokens'] is not None:
             label += f" {group['context_window_tokens']:,} tokens"
-        base = baselines[(group['model'], group['harness'], group['profile'], group['model_id'])]
-        speedup = group['throughput'] / base['throughput'] if base['throughput'] else None
-        efficiency = speedup / (group['concurrency'] / base['concurrency']) if speedup is not None else None
+        base = baselines.get((group['model'], group['harness'], group['profile'], group['model_id']))
+        speedup = (group['throughput'] / base['throughput'] if base and base['throughput'] and
+                   not group.get('variable_concurrency') else None)
+        efficiency = speedup / (group['concurrency'] / base['concurrency']) if speedup is not None and base else None
         ci = group['test_confidence_95']
         interval = f'{ci[0]:.1%}–{ci[1]:.1%}' if ci else 'N/A (fewer than 2 cases)'
         model_records = [r for r in records if r.model == group['model'] and r.harness == group['harness']
@@ -40,7 +48,8 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
                          and r.model_id == group['model_id'] and r.harness_version == group['harness_version']]
         duration = sum(r.model_seconds for r in model_records if r.usage_available)
         output_rate = sum(r.completion_tokens for r in model_records if r.usage_available) / duration if duration else None
-        values = [label, group['model_id'], group['concurrency'], group['attempts'],
+        values = [label, group['model_id'], str(group['concurrency']) +
+                  (' (variable)' if group.get('variable_concurrency') else ''), group['attempts'],
                   'Complete' if group['complete'] else 'Partial' if group['complete'] is False else 'Unknown',
                   percent(group['execution_success']), percent(group['test_accuracy']), interval,
                   percent(group['test_coverage']), percent(group['judge_mean']), percent(group['judge_coverage']),

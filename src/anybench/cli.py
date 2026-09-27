@@ -31,6 +31,9 @@ def _configs(path: Path) -> list[ModelConfig]:
     if not isinstance(data, list):
         raise ValueError("Model config must be a JSON array")
     configs = [ModelConfig(**item) for item in data]
+    from .live import observer
+    if observer():
+        observer().set_configs(configs)
     if len({config.name for config in configs}) != len(configs):
         raise ValueError("Model names must be unique")
     return configs
@@ -133,6 +136,11 @@ def _main(argv: list[str] | None = None) -> None:
     guided.add_argument("--commits", type=int)
     guided.add_argument("--max-problems", type=int)
     guided.add_argument("--resume", type=Path, metavar="SESSION")
+    guided.add_argument("--yes", action="store_true", help="Use a preconfirmed launch from Experimental Studio")
+    studio = commands.add_parser("studio", help="Experimental local benchmark workspace")
+    studio.add_argument("--port", type=int, default=8765)
+    studio.add_argument("--attach", type=Path)
+    studio.add_argument("--no-open", action="store_true")
     setup = commands.add_parser("configure", help="Add or edit repositories and model endpoints")
     setup.add_argument("repositories", nargs="*")
     setup.add_argument("--config", type=Path, default=Path(".anybench/config.json"))
@@ -229,7 +237,8 @@ def _main(argv: list[str] | None = None) -> None:
         configure(args.config, args.repositories)
     elif args.command == "start":
         from .guided import start
-        start(args.repositories, args.config, args.commits, args.max_problems, args.resume)
+        start(args.repositories, args.config, args.commits, args.max_problems, args.resume,
+              confirmed=args.yes)
     elif args.command == "build":
         if not _distinct_paths(args.models, args.output):
             parser.error("Build model config and output paths must differ")
@@ -294,6 +303,12 @@ def _main(argv: list[str] | None = None) -> None:
                                   {"repository": source, "target_commit": commit,
                                    "accepted": accepted}), completed, revisions, args.max_patch_bytes,
                               lambda event: append_dict_jsonl(events, event))
+        from .live import observer
+        if observer() and observer().controller.stopping:
+            partial = observer().path.parent / "partial-report.html"
+            report([], partial, cases=cases)
+            observer().set_meta("partial_report_path", str(partial.resolve()))
+            observer().emit("report.partial", "report", {"path": str(partial.resolve())})
         print(f"Wrote {len(cases) - len(existing)} new cases ({len(cases)} total) to {args.output}")
     elif args.command == "prepare":
         if args.commits < 1:
@@ -359,6 +374,12 @@ def _main(argv: list[str] | None = None) -> None:
                 ensure_private_parent(args.verified_output)
                 write_cases(args.verified_output, [case for case in cases
                                                    if case.case_id in verified])
+        from .live import observer
+        if observer() and observer().controller.stopping:
+            partial = observer().path.parent / "partial-report.html"
+            report([], partial, cases=cases)
+            observer().set_meta("partial_report_path", str(partial.resolve()))
+            observer().emit("report.partial", "report", {"path": str(partial.resolve())})
         if errors:
             if args.check_tests and (args.json_output or args.verified_output) and selected_ids:
                 print("\n".join(errors), file=sys.stderr)
@@ -452,6 +473,10 @@ def _main(argv: list[str] | None = None) -> None:
             append_jsonl(args.output, record)
             append_dict_jsonl(events, {"event": "attempt_completed", "key": record_key(record),
                                       "status": record.status, "time": record.finished_at})
+            from .live import observer
+            if observer():
+                operation_id = f"attempt:{record.case_id}:{record.model}:{record.concurrency}:{record.attempt}"
+                observer().operation_end(operation_id, "candidate", "completed")
             print(f"{record.model}: {record.case_id} #{record.attempt}: {record.status}", file=sys.stderr)
         new_records = run_sweep(cases, pinned, levels,
                             args.attempts, image_ids.get(args.image, args.image), args.max_steps, pinned_map,
@@ -460,6 +485,12 @@ def _main(argv: list[str] | None = None) -> None:
         append_dict_jsonl(events, {"event": "session_finished", "time": __import__('time').time()})
         records = prior + new_records
         print(f"Wrote {len(records)} attempts to {args.output}")
+        from .live import observer, variable_groups_for
+        if observer() and observer().controller.stopping:
+            partial = args.output.with_name(args.output.stem + ".partial.html")
+            report(records, partial, cases=cases, variable_groups=variable_groups_for(args.output))
+            observer().set_meta("partial_report_path", str(partial.resolve()))
+            observer().emit("report.partial", "report", {"path": str(partial.resolve())})
     elif args.command == "evaluate":
         configs = _configs(args.models) if args.models else []
         if args.judge and not args.models:
@@ -505,18 +536,38 @@ def _main(argv: list[str] | None = None) -> None:
         for record in candidate_records:
             if record_key(record) in completed:
                 continue
-            evaluated = evaluate([record], cases, client)[0]
+            from .live import checkpoint, emit
+            if not checkpoint():
+                break
+            emit("judge.started", "judge", {"model": selected.name if selected else None},
+                 case_id=record.case_id, attempt=record.attempt, model=record.model)
+            from .live import scope
+            with scope(case_id=record.case_id, attempt=record.attempt,
+                       model=record.model, concurrency=record.concurrency):
+                evaluated = evaluate([record], cases, client)[0]
             append_jsonl(args.output, evaluated)
+            emit("judge.finished", "judge", {"score": evaluated.judge_score,
+                                               "reason": evaluated.judge_reason,
+                                               "seconds": evaluated.judge_seconds},
+                 case_id=record.case_id, attempt=record.attempt, model=record.model)
         records = read_jsonl(args.output)
+        from .live import observer, variable_groups_for
+        if observer() and observer().controller.stopping:
+            partial = args.output.with_name(args.output.stem + ".partial.html")
+            report(records, partial, cases=cases, variable_groups=variable_groups_for(args.output))
+            observer().set_meta("partial_report_path", str(partial.resolve()))
+            observer().emit("report.partial", "report", {"path": str(partial.resolve())})
         print(f"Wrote {len(records)} evaluated attempts to {args.output}")
     elif args.command == "report":
         if not _distinct_paths(args.results, args.output):
             parser.error("Report input and output paths must differ")
         from .commands import load_manifest, read_rates, dataset_context
+        from .live import variable_groups_for
         metrics = report(read_jsonl(args.results), args.output,
                          cases=dataset_context(args.results, args.dataset),
                          manifest=load_manifest(args.results), rates=read_rates(args.rates),
-                         aggregate_only=args.aggregate_only, include_private=args.include_private)
+                         aggregate_only=args.aggregate_only, include_private=args.include_private,
+                         variable_groups=variable_groups_for(args.results))
         if args.metrics_output:
             private_json(args.metrics_output, metrics)
         print(f"Wrote report to {args.output}")
@@ -542,12 +593,72 @@ def _main(argv: list[str] | None = None) -> None:
         except ValueError as exc:
             parser.error(str(exc))
         print(f"{status}: {destination}")
+    elif args.command == "studio":
+        from .studio_server import serve
+        serve(args.port, args.attach, open_browser=not args.no_open)
 
 
 def main(argv: list[str] | None = None) -> None:
     from .commands import invoke
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    live = "--live" in arguments
+    if live:
+        arguments.remove("--live")
+        if not arguments or arguments[0] not in {"start", "build", "validate", "run", "evaluate"}:
+            raise SystemExit("--live is supported with start, build, validate, run, and evaluate")
+    def execute() -> None:
+        from .live import emit, observer, stage_scope
+        command = arguments[0] if arguments else "unknown"
+        if observer():
+            for flag, key in (("--output", "output_path"), ("--json-output", "verification_path"),
+                              ("--verified-output", "verified_path")):
+                if flag in arguments:
+                    index = arguments.index(flag)
+                    if index + 1 < len(arguments):
+                        observer().set_meta(key, str(Path(arguments[index + 1]).resolve()))
+        with stage_scope(command):
+            try:
+                if observer():
+                    emit("stage.started", command, {})
+                invoke(arguments, _main)
+            except BaseException as exc:
+                if observer():
+                    emit("stage.failed", command, {"error": str(exc)})
+                raise
+            else:
+                if observer():
+                    emit("stage.finished", command, {})
     try:
-        invoke(list(sys.argv[1:] if argv is None else argv), _main)
+        if live:
+            from .live import RunObserver, activate, observer
+            if observer():
+                execute()
+            else:
+                active = RunObserver(os.environ.get("ANYBENCH_LIVE_ID"))
+                active.set_meta("command", arguments[0])
+                active.set_meta("arguments", arguments)
+                active.set_meta("started_at", __import__("time").time())
+                active.set_meta("worker_pid", os.getpid())
+                with activate(active):
+                    from .studio_server import ensure_server
+                    address = ensure_server(active.run_id)
+                    print("Experimental AnyBench Studio: " + address, file=sys.stderr, flush=True)
+                    active.start_sampling()
+                    active.emit("session.started", "session", {"command": arguments[0]})
+                    active.set_meta("state", "running")
+                    try:
+                        execute()
+                    except BaseException as exc:
+                        active.emit("session.failed", "session", {"error": str(exc)})
+                        active.set_meta("state", "failed")
+                        raise
+                    else:
+                        active.emit("session.finished", "session", {})
+                        active.set_meta("state", "stopped" if active.controller.stopping else "finished")
+                    finally:
+                        active.stop_sampling()
+        else:
+            execute()
     except (ValueError, OSError) as exc:
         print(f"anybench: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc

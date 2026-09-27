@@ -13,6 +13,7 @@ from .llm import ChatClient, parse_json_object
 from .model import Case
 from .repository import OutputLimitError, git, git_args, git_environment
 from .metadata import case_metadata
+from .live import checkpoint, emit
 
 
 BUILDER_TOOLS = [
@@ -49,6 +50,8 @@ def analyze_commit(client: ChatClient, repo: Path, parent: str, commit: str,
             raw = message.get("content") or ""
             return parse_json_object(raw)
         for call in tool_calls:
+            name = "unknown"
+            arguments = {}
             try:
                 arguments = json.loads(call["function"]["arguments"])
                 name = call["function"]["name"]
@@ -75,6 +78,8 @@ def analyze_commit(client: ChatClient, repo: Path, parent: str, commit: str,
             except (ValueError, KeyError, subprocess.CalledProcessError) as exc:
                 output = f"Tool error: {exc}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+            emit("tool.completed", "builder", {"tool": name, "arguments": arguments,
+                                                 "result": output[:2000]}, commit=commit)
     raise ValueError(f"Dataset agent exceeded step limit for {commit}")
 
 
@@ -123,12 +128,16 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
                 if (index >= len(revisions) or (source, revisions[index]) in seen or
                         (source, revisions[index]) in (completed or set())):
                     continue
+                if not checkpoint():
+                    return cases
                 before = (getattr(client, "prompt_tokens", 0), getattr(client, "completion_tokens", 0))
+                emit("commit.started", "builder", {"repository": source}, commit=revisions[index])
                 if on_event:
                     on_event({"event": "commit_started", "repository": source, "commit": revisions[index]})
                 try:
                     case = _case_from_commit(client, repo, source, identifier, revisions[index], max_patch_bytes)
                 except Exception as exc:
+                    emit("commit.error", "builder", {"error": str(exc)}, commit=revisions[index])
                     if on_event:
                         on_event({"event": "commit_error", "repository": source, "commit": revisions[index],
                                   "error": str(exc), "prompt_tokens": getattr(client, "prompt_tokens", 0) - before[0],
@@ -140,6 +149,9 @@ def build_dataset(repositories: list[str | Path], client: ChatClient, commits: i
                               "case": asdict(case) if case is not None else None,
                               "prompt_tokens": getattr(client, "prompt_tokens", 0) - before[0],
                               "completion_tokens": getattr(client, "completion_tokens", 0) - before[1]})
+                emit("commit.completed", "builder", {"accepted": case is not None,
+                                                       "case_id": case.case_id if case else None},
+                     commit=revisions[index])
                 if case is None:
                     if on_decision:
                         on_decision(source, revisions[index], False)
@@ -159,16 +171,20 @@ def _case_from_commit(client: ChatClient, repo: Path, source: str,
                       identifier: str, commit: str, max_patch_bytes: int = 500_000) -> Case | None:
     parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
     if len(parents) != 2:  # merge commits and root commits are ambiguous cases
+        emit("commit.rejected", "builder", {"reason": "Root or merge commit"}, commit=commit)
         return None
     parent = parents[1]
     try:
         diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--",
                    max_output_bytes=max_patch_bytes + 1)
     except OutputLimitError:
+        emit("commit.rejected", "builder", {"reason": "Patch exceeded output limit"}, commit=commit)
         return None
     if not diff.strip():
+        emit("commit.rejected", "builder", {"reason": "Empty patch"}, commit=commit)
         return None
     if len(diff.encode()) > max_patch_bytes:
+        emit("commit.rejected", "builder", {"reason": "Patch exceeded configured size limit"}, commit=commit)
         return None
     # The original diff remains exact in the CSV. The model gets a bounded excerpt.
     context = git(repo, "show", "-s", "--format=%B", commit)
@@ -206,13 +222,17 @@ def case_from_annotation(repo: Path, source: str, identifier: str, commit: str,
     if parent is None:
         parents = git(repo, "rev-list", "--parents", "-n", "1", commit).split()
         if len(parents) != 2:
+            emit("commit.rejected", "builder", {"reason": "Root or merge commit"}, commit=commit)
             return None
         parent = parents[1]
     if diff is None:
         diff = git(repo, "diff", "--no-ext-diff", "--find-renames", parent, commit, "--")
     if not diff.strip():
+        emit("commit.rejected", "builder", {"reason": "Empty patch"}, commit=commit)
         return None
     if data.get("eligible") is False:
+        emit("commit.rejected", "builder",
+             {"reason": str(data.get("reason") or "Builder marked commit ineligible")}, commit=commit)
         return None
     if "eligible" in data and data["eligible"] is not True:
         raise ValueError(f"Model returned a non-boolean eligible for {commit}")

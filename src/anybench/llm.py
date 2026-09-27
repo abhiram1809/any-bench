@@ -89,6 +89,15 @@ class ChatClient:
         payload = self._payload(messages, tools)
         if self.session_id is not None:
             payload["session_id"] = self.session_id
+        from .live import observer
+        active = observer()
+        operation_id = "api:" + uuid4().hex if active else ""
+        if active:
+            active.operation_start(operation_id, self.config.role)
+            active.emit("model.request", self.config.role,
+                        {"model": self.config.model, "api": api, "endpoint": endpoint,
+                         "prompt": active.artifact(payload), "tools": len(tools or [])},
+                        model=self.config.name, operation_id=operation_id)
         headers = {"Content-Type": "application/json"}
         if api == "anthropic":
             headers.update({"anthropic-version": "2023-06-01"})
@@ -105,7 +114,9 @@ class ChatClient:
             try:
                 timeout = min(self.timeout, max(1, self.config.attempt_timeout - (time.monotonic() - self.started))) if self.config.attempt_timeout else self.timeout
                 deadline = time.monotonic() + timeout
-                with opener.open(request, timeout=timeout) as response:
+                from contextlib import nullcontext
+                gate = active.controller.request(endpoint) if active else nullcontext()
+                with gate, opener.open(request, timeout=timeout) as response:
                     parts = []
                     total = 0
                     while True:
@@ -143,6 +154,11 @@ class ChatClient:
                     delay = 2 ** attempt
                 time.sleep(max(0, min(delay, 30)))
                 self.events.append({"retry": attempt + 1, "http_status": exc.code, "delay": max(0, min(delay, 30))})
+                if active:
+                    active.emit("model.retry", self.config.role,
+                                {"http_status": exc.code, "retry": attempt + 1,
+                                 "delay": max(0, min(delay, 30))},
+                                model=self.config.name, operation_id=operation_id)
             except urllib.error.URLError as exc:
                 if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
                     raise RuntimeError("LLM API response timed out; billing state unknown") from exc
@@ -161,6 +177,13 @@ class ChatClient:
                 any(choice.get("finish_reason") == "length" for choice in data.get("choices", []))):
             raise RuntimeError("LLM response exceeded output token limit; usage preserved")
         reply.message = redact_value(reply.message, self.config)
+        if active:
+            active.emit("model.response", self.config.role,
+                        {"seconds": reply.seconds, "prompt_tokens": reply.prompt_tokens,
+                         "completion_tokens": reply.completion_tokens,
+                         "response": active.artifact(reply.message)},
+                        model=self.config.name, operation_id=operation_id)
+            active.operation_end(operation_id, self.config.role, "completed")
         return reply
 
     def _payload(self, messages: list[dict], tools: list[dict] | None) -> dict:

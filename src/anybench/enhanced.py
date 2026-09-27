@@ -12,6 +12,7 @@ from .context import (Artifacts, BudgetExhausted, Context, ContextExhausted,
 from .llm import ChatClient, ContextLimitError, LimitExceeded, Reply
 from .model import ModelConfig, _private_opener
 from .sandbox import Sandbox, ToolError
+from .live import emit, observer
 
 SYSTEM = """You are solving a coding task in /repo, checked out before the target change.
 Inspect relevant code and repository instructions, make focused changes, and verify them with
@@ -94,6 +95,8 @@ class Attempt:
             raise BudgetExhausted('Shared model-call budget exhausted')
         self.remaining -= 1
         self.result.model_calls_by_purpose[purpose] += 1
+        emit("context.model_call", "candidate", {"purpose": purpose,
+             "remaining_calls": self.remaining, "context_window_tokens": self.config.context_window_tokens})
         start = time.monotonic()
         try:
             reply = self.client.complete(messages, tools)
@@ -105,12 +108,17 @@ class Attempt:
         self.result.completion_tokens += reply.completion_tokens
         handle = self.artifacts.put(json.dumps(reply.message, ensure_ascii=False))
         self.result.trace.append({'model_call': purpose, 'response_artifact': handle})
+        emit("context.model_result", "candidate", {"purpose": purpose,
+             "prompt_tokens": reply.prompt_tokens, "completion_tokens": reply.completion_tokens,
+             "seconds": reply.seconds})
         return reply
 
     def loop(self, task: str, readonly: bool = False) -> tuple[str, str]:
         assert self.sandbox.root is not None
         instructions = Instructions(self.sandbox.root)
         instructions.load('.', directory=True)
+        emit("context.instructions", "candidate", {"locations": instructions.locations(),
+             "readonly": readonly})
         listing = self.sandbox.enhanced_tool('List', {})['output']
         listing += '\nInstruction file locations in base snapshot:\n' + instructions.locations()
         handle = self.artifacts.put(listing)
@@ -132,6 +140,9 @@ class Attempt:
                 raise BudgetExhausted('Shared model-call budget exhausted')
             if not ctx.maintain(self.complete):
                 raise ContextExhausted('Context cannot fit required instructions and recent work')
+            emit("context.state", "candidate", {"estimated_tokens": ctx.tokens(),
+                 "input_budget": ctx.input_budget, "compactions": ctx.compactions,
+                 "remaining_calls": self.remaining})
             messages = ctx.messages()
             try:
                 reply = self.complete(messages, tools, purpose)
@@ -222,6 +233,10 @@ class Attempt:
                     output = f'Tool error: {exc}'
                     event = {'session': session, 'tool': name, 'arguments': arguments, 'result': output}
                 self.result.trace.append(event)
+                emit("tool.completed", "candidate", {"tool": name,
+                     "arguments": arguments, "result": output[:2000],
+                     "details": observer().artifact(event) if observer() else None,
+                     "readonly": readonly})
                 group.append({'role': 'tool', 'tool_call_id': call['id'], 'content': output})
             if discoveries:
                 group.append({'role': 'user', 'content': '\n\n'.join(discoveries)})
@@ -251,6 +266,10 @@ def enhanced_loop(client: ChatClient, sandbox: Sandbox, problem: str, config: Mo
     finally:
         attempt.result.compactions = sum(ctx.compactions for ctx in attempt.contexts)
         attempt.result.peak_context_tokens = max((ctx.peak for ctx in attempt.contexts), default=0)
+        emit("context.finished", "candidate", {"compactions": attempt.result.compactions,
+             "peak_context_tokens": attempt.result.peak_context_tokens,
+             "model_calls_by_purpose": attempt.result.model_calls_by_purpose,
+             "stop_reason": attempt.result.stop_reason})
         manifest = attempt.artifacts.root / 'trace.json'
         trace_text = json.dumps(attempt.result.trace, ensure_ascii=False)
         if attempt.artifacts.size + len(trace_text.encode()) > attempt.artifacts.limit:

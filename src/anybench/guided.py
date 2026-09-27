@@ -247,8 +247,15 @@ def _dockerfile(commands: list[str]) -> str:
 def _build_image(tag: str, recipe: Path) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory(prefix="anybench-image-") as temp:
         (Path(temp) / "Dockerfile").write_text(recipe.read_text())
-        result = subprocess.run(["docker", "build", "-t", tag, temp],
-                                capture_output=True, text=True, timeout=1800)
+        from .live import observer
+        if observer():
+            from .sandbox import _limited_run
+            from .live import stage_scope
+            with stage_scope("environment"):
+                result = _limited_run(["docker", "build", "-t", tag, temp], 1800, 20_000_000)
+        else:
+            result = subprocess.run(["docker", "build", "-t", tag, temp],
+                                    capture_output=True, text=True, timeout=1800)
     output = (result.stdout + result.stderr)[-12000:]
     return result.returncode == 0, output
 
@@ -295,6 +302,9 @@ def _prepare_image(repository: str, cases: list, builder: ModelConfig, session: 
                 raise ValueError("Builder recipe contains a credential")
         recipe_path.write_text(_dockerfile(commands))
         recipe_path.chmod(0o600)
+        from .live import emit, observer
+        emit("environment.recipe", "environment", {"repository": repository,
+             "commands": commands, "dockerfile": observer().artifact(recipe_path.read_text()) if observer() else None})
         state = {"phase": "recipe", "commands": commands, "repaired": phase == "repair_pending",
                  "prior_image_id": state.get("image_id", "")}
         private_json(state_path, state)
@@ -341,7 +351,7 @@ def _diagnostic_report(session: Path, diagnostics: list[dict]) -> Path:
 
 def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
           commits: int | None = None, max_problems: int | None = None,
-          resume: Path | None = None) -> Path:
+          resume: Path | None = None, *, confirmed: bool = False) -> Path:
     if commits is not None and commits < 1 or max_problems is not None and max_problems < 1:
         raise ValueError("--commits and --max-problems must be positive")
     config_path = config_path.expanduser()
@@ -386,13 +396,16 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
         print(f"Candidate models: {sum(item['role'] == 'candidate' for item in config['models'])}; "
               f"maximum problems: {max_problems or 'all verified'}")
         print("Builder and candidate calls may incur provider charges. Docker setup may download public dependencies.")
-        if _ask("Start benchmark? (y/N)", "n").lower() != "y":
+        if not confirmed and _ask("Start benchmark? (y/N)", "n").lower() != "y":
             raise ValueError("Benchmark cancelled before paid model calls")
         private_json(session / "session.json", {"repositories": repositories, "commits": commits,
                      "max_problems": max_problems,
                      "config_path": str(config_path.resolve()),
                      "models_sha256": fingerprint([_public_model(item) for item in config["models"]])})
     from .cli import main
+    from .live import checkpoint, emit, observer
+    if observer():
+        observer().set_meta("session_path", str(session.resolve()))
     cases_path = session / "cases.csv"
     if not cases_path.exists() or (session / "cases.csv.manifest.json").exists() and not (session / "build.done").exists():
         args = ["build", *repositories, "--models", str(role_files["builder"]), "--builder",
@@ -401,6 +414,8 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
         if cases_path.exists():
             args.append("--resume")
         main(args)
+        if observer() and observer().controller.stopping:
+            return _diagnostic_report(session, [{"status": "skipped", "reason": "Stopped during dataset building"}])
         (session / "build.done").touch(mode=0o600)
     cases = read_cases(cases_path)
     diagnostics: list[dict] = []
@@ -414,8 +429,13 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
         images: dict[str, str] = {}
         outcomes: list[dict] = []
         for repository, repo_cases in by_repo.items():
+            if not checkpoint():
+                break
             print(f"Preparing test environment for {repository}")
+            emit("environment.started", "environment", {"repository": repository})
             image, error = _prepare_image(repository, repo_cases, builder, session)
+            emit("environment.finished", "environment", {"repository": repository,
+                                                         "image": image, "error": error})
             if image is None:
                 outcomes.extend({"repository": repository, "case_id": case.case_id,
                                  "status": "skipped", "reason": "Environment setup failed: " + error}
@@ -436,6 +456,8 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
             outcomes.extend({"repository": repository, **item} for item in results)
         write_metadata(cases, cases_path)
         private_json(session / "validation.json", outcomes)
+        if observer() and observer().controller.stopping:
+            return _diagnostic_report(session, [*outcomes, {"status": "skipped", "reason": "Stopped during verification"}])
         private_json(image_map_path, images)
         selected = {item["case_id"] for item in outcomes if item["status"] == "verified"}
         chosen = [case for case in cases if case.case_id in selected]
@@ -456,6 +478,10 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
     if attempts.exists():
         args.append("--resume")
     main(args)
+    if observer() and observer().controller.stopping:
+        report_path = session / "report.html"
+        main(["report", str(attempts), "--dataset", str(verified_path), "--output", str(report_path)])
+        return report_path
     results = attempts
     if "judge" in role_files:
         results = session / "scored.jsonl"
@@ -465,6 +491,10 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
         if results.exists():
             args.append("--resume")
         main(args)
+        if observer() and observer().controller.stopping:
+            report_path = session / "report.html"
+            main(["report", str(results), "--dataset", str(verified_path), "--output", str(report_path)])
+            return report_path
     report_path = session / "report.html"
     main(["report", str(results), "--dataset", str(verified_path), "--output", str(report_path)])
     print(f"Verified {len(verified)} problems. Report: {report_path}")

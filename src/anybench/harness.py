@@ -58,6 +58,28 @@ def external_sandbox(case: Case, config: ModelConfig, workspace_size: str, memor
 
 
 def execute_harness(sandbox: Sandbox, case: Case, config: ModelConfig) -> HarnessResult:
+    from .live import observer
+    active = observer()
+    pending_line = ""
+    def live_output(chunk: str) -> None:
+        nonlocal pending_line
+        pending_line += chunk
+        while "\n" in pending_line:
+            line, pending_line = pending_line.split("\n", 1)
+            if len(line) > 100_000:
+                continue
+            try:
+                value = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if active and isinstance(value, dict):
+                active.emit("harness.event", "candidate", {"type": value.get("type"),
+                    "item_type": (value.get("item") or {}).get("type") if isinstance(value.get("item"), dict) else None,
+                    "part_type": (value.get("part") or {}).get("type") if isinstance(value.get("part"), dict) else None,
+                    "usage": parse_events(config.harness, line).__dict__,
+                    "details": active.artifact(value)}, model=config.name, harness=config.harness)
+        if len(pending_line) > 100_000:
+            pending_line = ""
     task = {"case_id": case.case_id, "base_commit": case.base_commit,
             "problem_statement": case.problem_statement, "repository": "/repo"}
     written = subprocess.run(["docker", "exec", "-i", sandbox.container, "sh", "-c",
@@ -104,9 +126,10 @@ def execute_harness(sandbox: Sandbox, case: Case, config: ModelConfig) -> Harnes
                                '. /tmp/anybench-env.sh; '
                                'export ANYBENCH_TASK_FILE=/tmp/task.json '
                                'ANYBENCH_USAGE_FILE=/tmp/usage.json; exec "$@"',
-                               "sh", *command],
+                              "sh", *command],
                               timeout=min(config.harness_timeout, config.attempt_timeout or config.harness_timeout),
-                              limit=20_000_000)
+                              limit=20_000_000,
+                              **({"on_output": live_output} if active else {}))
     except ValueError as exc:
         exc.usage = parse_events(config.harness, getattr(exc, "output", ""))
         raise

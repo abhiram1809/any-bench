@@ -18,6 +18,7 @@ Issues = "https://github.com/abhiram1809/any-bench/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "ruff>=0.9", "mypy>=1.14"]
+studio = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 anybench = "anybench.cli:main"
@@ -26,7 +27,7 @@ anybench = "anybench.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md"]
+anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md", "studio_assets/*.html", "studio_assets/assets/*"]
 
 [tool.ruff]
 target-version = "py311"

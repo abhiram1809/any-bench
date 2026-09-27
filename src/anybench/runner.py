@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict
 
@@ -18,6 +19,7 @@ from .enhanced import enhanced_loop
 from .harness import PROXY_IMAGE, execute_harness, external_sandbox
 from .model import Case, ModelConfig, RunRecord
 from .sandbox import Sandbox, ToolError
+from .live import emit, observer, scope, stage_scope
 
 
 TOOL_SPECS = [
@@ -95,6 +97,8 @@ def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: in
             except (ValueError, TypeError, KeyError, OSError, ToolError) as exc:
                 output = f"Tool error: {exc}"
             trace.append({"tool": name, "arguments": arguments, "result": output[:2000]})
+            emit("tool.completed", "candidate", {"tool": name, "arguments": arguments,
+                                                  "result": output[:2000]})
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
     return "Step limit reached", trace, prompt_tokens, completion_tokens, calls, model_seconds
 
@@ -103,6 +107,28 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
             image: str = "anybench-sandbox:latest", max_steps: int = 30,
             workspace_size: str = "512m", memory: str = "1g",
             artifact_base: Path | None = None) -> RunRecord:
+    with scope(case_id=case.case_id, model=config.name, harness=config.harness,
+               attempt=attempt, repository=case.repository), stage_scope("candidate"):
+        emit("attempt.started", "candidate", {"problem": case.problem_statement,
+                                                 "base_commit": case.base_commit,
+                                                 "harness": config.harness})
+        record = _run_one(case, config, attempt, image, max_steps, workspace_size,
+                          memory, artifact_base)
+        emit("attempt.finished", "candidate", {"status": record.status,
+                                                  "stop_reason": record.stop_reason,
+                                                  "seconds": record.seconds,
+                                                  "test_passed": record.test_passed,
+                                                  "prompt_tokens": record.prompt_tokens,
+                                                  "completion_tokens": record.completion_tokens,
+                                                  "error": record.error,
+                                                  "diff": observer().artifact(record.diff) if observer() else None})
+        return record
+
+
+def _run_one(case: Case, config: ModelConfig, attempt: int = 1,
+             image: str = "anybench-sandbox:latest", max_steps: int = 30,
+             workspace_size: str = "512m", memory: str = "1g",
+             artifact_base: Path | None = None) -> RunRecord:
     start = time.monotonic()
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
                        started_at=time.time(), harness=config.harness, model_id=config.model)
@@ -113,6 +139,8 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
                    if config.harness == "anybench" else
                    external_sandbox(case, config, workspace_size, memory))
         with context as sandbox:
+            emit("sandbox.ready", "candidate", {"container": sandbox.container,
+                                                 "image": config.image if config.harness != "anybench" else image})
             record.setup_seconds = time.monotonic() - start
             harness_start = time.monotonic()
             try:
@@ -180,6 +208,7 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
                          else "error")
         if case.test_command and not case.external_validation:
             test_start = time.monotonic()
+            emit("test.started", "evaluation", {"command": case.test_command})
             outcome = evaluate_patch(case, record.diff,
                                      config.image if config.harness != "anybench" else image,
                                      workspace_size, memory)
@@ -187,6 +216,7 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
             record.test_seconds = time.monotonic() - test_start
             record.trace.append({"test_command": case.test_command, "result": outcome.output,
                                  "evaluation": asdict(outcome)})
+            emit("test.finished", "evaluation", asdict(outcome))
     except Exception as exc:
         record.status = "error"
         if record.stop_reason in {"", "completed"}:
@@ -211,26 +241,50 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
         raise ValueError("concurrency and attempts must be positive")
     results: list[RunRecord] = []
     CANCELLED.clear()
+    active = observer()
     for config in configs:
         workers = min(concurrency, config.provider_concurrency or concurrency)
+        if active:
+            active.controller.set_level(concurrency, config.provider_concurrency, config.name)
         jobs = iter((case, attempt) for case in cases for attempt in range(1, attempts + 1)
                     if (case.case_id, config.name, concurrency, attempt) not in (completed_keys or set()))
-        pool = ThreadPoolExecutor(max_workers=workers)
+        pool = ThreadPoolExecutor(max_workers=max(workers, 64) if active else workers)
         pending = set()
+        exhausted = False
         def submit_next():
+            nonlocal exhausted
             job = next(jobs, None)
             if job is None:
+                exhausted = True
                 return
             case, attempt = job
-            pending.add(pool.submit(run_one, case, config, attempt,
+            if active:
+                operation_id = f"attempt:{case.case_id}:{config.name}:{concurrency}:{attempt}"
+                active.operation_start(operation_id, "candidate")
+            with scope(concurrency=concurrency):
+                context = copy_context()
+            pending.add(pool.submit(context.run, run_one, case, config, attempt,
                                     (image_map or {}).get(case.repository, image), max_steps,
                                     workspace_size, memory,
                                     *([artifact_base] if artifact_base is not None else [])))
         try:
-            for _ in range(workers):
-                submit_next()
-            while pending:
-                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            while pending or not exhausted:
+                if active:
+                    active.controller._poll()
+                    if not active.controller.stopping and not active.controller.paused:
+                        allowed = min(active.controller.target,
+                                      config.provider_concurrency or active.controller.target)
+                        while len(pending) < allowed and not exhausted:
+                            submit_next()
+                else:
+                    while len(pending) < workers and not exhausted:
+                        submit_next()
+                if not pending:
+                    if active and active.controller.stopping:
+                        break
+                    time.sleep(.2)
+                    continue
+                done, _ = wait(pending, timeout=.2 if active else None, return_when=FIRST_COMPLETED)
                 for future in done:
                     pending.remove(future)
                     record = future.result()
@@ -238,7 +292,8 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
                     results.append(record)
                     if on_record:
                         on_record(record)
-                    submit_next()
+                if active and active.controller.stopping and not pending:
+                    break
         except KeyboardInterrupt:
             CANCELLED.set()
             raise
@@ -261,6 +316,8 @@ def run_sweep(cases: list[Case], configs: list[ModelConfig],
         raise ValueError("concurrencies must contain positive integers")
     results = []
     for level in concurrencies:
+        if observer() and observer().controller.stopping:
+            break
         results.extend(run_cases(cases, configs, level, attempts, image, max_steps,
                                  image_map, on_record, workspace_size, memory,
                                  completed_keys, artifact_base))

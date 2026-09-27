@@ -10,6 +10,7 @@ from .model import Case, RunRecord
 from .sandbox import Sandbox
 from .metadata import case_metadata, verification_identity
 from .outcomes import TestOutcome, check
+from .live import checkpoint, emit, scope, stage_scope
 
 
 @lru_cache(maxsize=32)
@@ -79,17 +80,25 @@ def evaluate_patch(case: Case, patch: str, image: str = "anybench-sandbox:latest
                    command: str | None = None, reference: bool = False) -> TestOutcome:
     metadata = case_metadata(case)
     profile = metadata.get("environment", {})
-    with Sandbox(case, image=image, workspace_size=workspace_size, memory=memory,
-                 evaluation_patch=patch,
-                 evaluation_files=metadata.get("evaluation_files", {}),
-                 protected_paths=metadata.get("protected_paths", [])) as sandbox:
-        if profile.get("setup_check"):
-            result = sandbox.command(["sh", "-lc", profile["setup_check"]], timeout=120)
-            if result.returncode:
-                return TestOutcome("setup_error", result.returncode, None, 0,
-                                   (result.stdout + result.stderr)[-12000:])
-        return check(sandbox, command or metadata.get("evaluation_command") or
-                     profile.get("test_command") or case.test_command)
+    with scope(case_id=case.case_id, evaluation="reference" if reference else
+               "base" if not patch else "candidate"), stage_scope("evaluation"):
+        emit("test.started", "evaluation", {"command": command or case.test_command,
+                                             "image": image, "reference": reference})
+        with Sandbox(case, image=image, workspace_size=workspace_size, memory=memory,
+                     evaluation_patch=patch,
+                     evaluation_files=metadata.get("evaluation_files", {}),
+                     protected_paths=metadata.get("protected_paths", [])) as sandbox:
+            if profile.get("setup_check"):
+                result = sandbox.command(["sh", "-lc", profile["setup_check"]], timeout=120)
+                if result.returncode:
+                    outcome = TestOutcome("setup_error", result.returncode, None, 0,
+                                          (result.stdout + result.stderr)[-12000:])
+                    emit("test.finished", "evaluation", asdict(outcome))
+                    return outcome
+            result = check(sandbox, command or metadata.get("evaluation_command") or
+                           profile.get("test_command") or case.test_command)
+            emit("test.finished", "evaluation", asdict(result))
+            return result
 
 
 def validation_results(cases: list[Case], image: str = "anybench-sandbox:latest",
@@ -98,13 +107,19 @@ def validation_results(cases: list[Case], image: str = "anybench-sandbox:latest"
     """Give every case a visible verification or skip reason."""
     results = []
     for case in cases:
+        if not checkpoint():
+            break
+        emit("validation.started", "validation", {"problem": case.problem_statement},
+             case_id=case.case_id)
         if case.external_validation:
             results.append({"case_id": case.case_id, "status": "skipped",
                             "reason": case.external_validation_reason or "external validation"})
+            emit("validation.finished", "validation", results[-1], case_id=case.case_id)
             continue
         if not case.test_command:
             results.append({"case_id": case.case_id, "status": "skipped",
                             "reason": "no local test command"})
+            emit("validation.finished", "validation", results[-1], case_id=case.case_id)
             continue
         metadata = case_metadata(case)
         metadata["validation"] = {"status": "pending"}
@@ -132,6 +147,7 @@ def validation_results(cases: list[Case], image: str = "anybench-sandbox:latest"
             metadata["validation"] = {"status": "invalid", "reason": str(exc)}
             results.append({"case_id": case.case_id, "status": "invalid",
                             "reason": f"test validation error: {exc}"})
+            emit("validation.finished", "validation", results[-1], case_id=case.case_id)
             continue
         reasons = []
         if any(t["base"]["status"] == "passed" for t in trials):
@@ -155,4 +171,5 @@ def validation_results(cases: list[Case], image: str = "anybench-sandbox:latest"
                         "reason": "; ".join(reasons), "base_passed": base.passed,
                         "gold_passed": gold.passed, "image": selected_image,
                         "image_id": selected_image_id, "trials": trials})
+        emit("validation.finished", "validation", results[-1], case_id=case.case_id)
     return results
