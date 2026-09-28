@@ -80,7 +80,7 @@ class ModelConfig:
     model: str = ""
     api_key_env: str = ""
     temperature: float = 0.0
-    max_retries: int = 2
+    max_retries: int = 5
     api: str = "chat_completions"
     max_output_tokens: int = 4096
     harness: str = "anybench"

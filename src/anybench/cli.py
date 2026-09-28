@@ -192,8 +192,8 @@ def _main(argv: list[str] | None = None) -> None:
                      help="Editable checkout limit (default: 512m)")
     run.add_argument("--memory", type=validate_size, default="1g",
                      help="Container memory limit (default: 1g)")
-    run.add_argument("--max-steps", type=int, default=30,
-                     help="Shared model-call budget for enhanced runs; main-loop steps for legacy (default: 30)")
+    run.add_argument("--max-steps", type=int, default=100,
+                     help="Shared model-call budget for enhanced runs; main-loop steps for legacy (default: 100)")
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--artifact-dir", type=Path)
     run.add_argument("--resume", action="store_true")

@@ -250,7 +250,7 @@ class Attempt:
 
 
 def enhanced_loop(client: ChatClient, sandbox: Sandbox, problem: str, config: ModelConfig,
-                  max_steps: int = 30, artifact_base: Path = Path('.anybench/artifacts')) -> AgentResult:
+                  max_steps: int = 100, artifact_base: Path = Path('.anybench/artifacts')) -> AgentResult:
     attempt = Attempt(client, sandbox, config, max_steps, artifact_base)
     try:
         attempt.result.final_text, _ = attempt.loop(problem)

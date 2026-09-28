@@ -120,7 +120,7 @@ Enhanced behavior:
 - `Agent` runs sequential, read-only exploration/review in a separate context, with
   no commands, edits, or nested delegation. It returns findings and a transcript
   handle. Each child has at most 10 agent turns and leaves one main-agent call for its
-  parent when compaction overhead allows. All main, child, and compaction calls share `--max-steps` (default 30).
+  parent when compaction overhead allows. All main, child, and compaction calls share `--max-steps` (default 100).
 - `Run` executes agent-selected tests/checks inside Docker. Its timeout defaults to
   120 seconds, capped at 300. Timed-out commands and descendants are terminated;
   output includes exit status, duration, and workspace status. All enhanced file
@@ -142,7 +142,7 @@ use the same endpoint/model/settings and image, and run:
 
 ```bash
 anybench run .anybench/cases.csv --models .anybench/comparison-models.json \
-  --attempts 3 --concurrency 1 --max-steps 30 --output .anybench/comparison.jsonl
+  --attempts 3 --concurrency 1 --max-steps 100 --output .anybench/comparison.jsonl
 anybench report .anybench/comparison.jsonl --output .anybench/comparison.html
 ```
 
@@ -194,7 +194,7 @@ anybench evaluate .anybench/cases.csv .anybench/attempts.jsonl --models .anybenc
 anybench report .anybench/scored.jsonl --output .anybench/report.html
 ```
 
-`run` uses two concurrent containers by default. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish and refuses to replace an existing output unless `--overwrite` is explicit. Use `--resume` with unchanged inputs to run only missing attempts. The HTML report shows accuracy, coverage, throughput, scaling, harness identity, token and cache usage, tool calls, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions. Older model configs and result files remain readable as built-in Chat Completions runs.
+`run` uses two concurrent containers and a 100-call model budget per attempt by default. Set `--max-steps` lower when a smaller budget is intentional. The step limit is not a dollar cap: set finite `max_total_tokens` and `attempt_timeout` values in each built-in model config to bound token use and elapsed time. Built-in model requests retry transient HTTP and connection errors up to five times by default, honoring `Retry-After` and using bounded backoff; set `max_retries` per model to change this. Use `--concurrencies 1 2 4` for a sequential scaling sweep, or `--attempts 3` for repeated attempts. It appends completed attempts to JSONL as they finish and refuses to replace an existing output unless `--overwrite` is explicit. Use `--resume` with unchanged inputs to run only missing attempts. The HTML report shows accuracy, coverage, throughput, scaling, harness identity, token and cache usage, tool calls, and attempt details. CSV, JSONL, and HTML outputs are created with private `0600` permissions. Older model configs and result files remain readable as built-in Chat Completions runs.
 
 Containers have dropped capabilities, a read-only root filesystem, and CPU, memory, and PID limits. Built-in harness containers have no network; external harness containers join an internal network with an allowlist proxy. Each editable checkout is copied into a size-limited temporary filesystem; the host snapshot is mounted read-only. The default checkout limit is `512m` and container memory limit is `1g`. For a larger repository, pass both `--workspace-size 1g --memory 2g` to `validate --check-tests` and `run`. The host still needs enough disk space to clone the source repository before the container starts. The enhanced built-in candidate uses `Run` for sandboxed test/check commands. The legacy profile retains its restricted `Bash` tool (`cat`, `grep`, `glob`, `wc`, and `jq`). The dataset's evaluator command stays private and runs separately after the attempt.
 
@@ -310,7 +310,7 @@ models = "candidates.json"
 output = "attempts.jsonl"
 concurrency = 2
 attempts = 3
-max_steps = 30
+max_steps = 100
 ```
 
 ```sh

@@ -47,7 +47,7 @@ def _api_tools(allow_agent: bool) -> list[dict]:
             if allow_agent or spec["name"] != "Agent"]
 
 
-def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: int = 30,
+def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: int = 100,
                allow_agent: bool = True) -> tuple[str, list[dict], int, int, int, float]:
     messages = [
         {"role": "system", "content": "You are fixing a coding task in /repo. Use tools to inspect and edit. "
@@ -104,7 +104,7 @@ def agent_loop(client: ChatClient, sandbox: Sandbox, problem: str, max_steps: in
 
 
 def run_one(case: Case, config: ModelConfig, attempt: int = 1,
-            image: str = "anybench-sandbox:latest", max_steps: int = 30,
+            image: str = "anybench-sandbox:latest", max_steps: int = 100,
             workspace_size: str = "512m", memory: str = "1g",
             artifact_base: Path | None = None) -> RunRecord:
     with scope(case_id=case.case_id, model=config.name, harness=config.harness,
@@ -126,7 +126,7 @@ def run_one(case: Case, config: ModelConfig, attempt: int = 1,
 
 
 def _run_one(case: Case, config: ModelConfig, attempt: int = 1,
-             image: str = "anybench-sandbox:latest", max_steps: int = 30,
+             image: str = "anybench-sandbox:latest", max_steps: int = 100,
              workspace_size: str = "512m", memory: str = "1g",
              artifact_base: Path | None = None) -> RunRecord:
     start = time.monotonic()
@@ -232,7 +232,7 @@ def _run_one(case: Case, config: ModelConfig, attempt: int = 1,
 
 def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 2,
              attempts: int = 1, image: str = "anybench-sandbox:latest",
-             max_steps: int = 30, image_map: dict[str, str] | None = None,
+             max_steps: int = 100, image_map: dict[str, str] | None = None,
              on_record: Callable[[RunRecord], None] | None = None,
              workspace_size: str = "512m", memory: str = "1g",
              completed_keys: set[tuple[str, str, int, int]] | None = None,
@@ -306,7 +306,7 @@ def run_cases(cases: list[Case], configs: list[ModelConfig], concurrency: int = 
 
 def run_sweep(cases: list[Case], configs: list[ModelConfig],
              concurrencies: list[int], attempts: int = 1,
-             image: str = "anybench-sandbox:latest", max_steps: int = 30,
+             image: str = "anybench-sandbox:latest", max_steps: int = 100,
              image_map: dict[str, str] | None = None,
              on_record: Callable[[RunRecord], None] | None = None,
              workspace_size: str = "512m", memory: str = "1g",
