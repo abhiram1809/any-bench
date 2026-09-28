@@ -1,0 +1,491 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AnyBench report</title><style>
+:root{color-scheme:light}body{font:15px system-ui;margin:0;background:#f3f6fb;color:#172033}
+main{max-width:1440px;margin:40px auto;padding:0 24px}h1{font-size:34px;margin-bottom:8px}h2{margin-top:32px}
+p{max-width:1000px;line-height:1.6}.muted{color:#526279}.scroll{overflow:auto;background:white;border:1px solid #dbe2ed;border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:12px;text-align:left;border-bottom:1px solid #e5eaf2;white-space:nowrap}
+th{background:#eaf0f9;cursor:pointer}th:focus{outline:2px solid #2563eb}pre{white-space:pre-wrap;word-break:break-word;max-width:850px;max-height:450px;overflow:auto}
+.controls{display:flex;gap:20px;margin:12px 0}input,select{padding:8px;border:1px solid #b9c6da;border-radius:4px}svg{background:white;max-width:760px;width:100%;border:1px solid #dbe2ed;border-radius:8px}
+.badge{display:inline-block;padding:5px 10px;background:#dbeafe;border-radius:20px;color:#1e40af}summary{cursor:pointer}
+</style></head><body><main><span class="badge">Offline experiment report</span><h1>AnyBench</h1><section style="margin:18px 0 24px;padding:18px 20px;border:1px solid #8fb4d4;border-left:5px solid #2563a6;border-radius:8px;background:#eaf4ff;max-width:1000px"><h2 style="margin:0 0 8px;font-size:20px">Campaign update: DeepSeek on Wafer, 100-step cap</h2><p style="margin:0 0 8px">DeepSeek completed and passed all four locally verified cases in the extended Wafer campaign. The original 20-step InferenceNet and Wafer runs each had 0/4 completed solves.</p><p style="margin:0">The extended result combines completed attempts after provider retries and token-cap reruns. It is not pass@1 or directly comparable with the one-attempt 20-step baselines. Qwen's four HTTP 429 responses measure provider availability. See the <a href="README.md">case study and verification notes</a> for case-level evidence and limits.</p></section>
+<p class="muted">Execution, local tests, and model judging are separate measurements. Exhausted attempts do not count as solved.
+Legacy combined accuracy retains the earlier minimum-of-evaluators calculation. Partial and unverified experiments are labeled;
+confidence intervals resample cases, not repeated attempts. N/A means unavailable.</p>
+<h2>Models</h2><div class="scroll"><table id="models"><thead><tr><th>Candidate</th><th>Model ID</th><th>Workers</th><th>Attempts</th><th>Completeness</th><th>Execution success</th><th>Test success</th><th>95% case bootstrap interval</th><th>Test Coverage</th><th>Judge mean</th><th>Judge Coverage</th><th>Legacy combined accuracy</th><th>Attempts/hour</th><th>Solved/hour</th><th>Latency p50</th><th>Latency p95</th><th>Output tokens/s</th><th>Speedup</th><th>Efficiency</th><th>Missing usage</th><th>Estimated candidate cost</th></tr></thead><tbody><tr><td>deepseek-v4.1-flash (anybench) [enhanced] 200,000 tokens</td><td>deepseek/deepseek-v4.1-flash</td><td>4</td><td>4</td><td>Unknown</td><td>25.0%</td><td>0.0%</td><td>0.0%–0.0%</td><td>100.0%</td><td>0.0%</td><td>25.0%</td><td>0.0%</td><td>2.5</td><td>0.0</td><td>362.0</td><td>522.6</td><td>15.7</td><td>1.00×</td><td>100.0%</td><td>0</td><td>$0.0084</td></tr><tr><td>deepseek-v4.1-flash-wafer-100 (anybench) [enhanced] 200,000 tokens</td><td>deepseek/deepseek-v4.1-flash</td><td>4</td><td>4</td><td>Unknown</td><td>100.0%</td><td>100.0%</td><td>100.0%–100.0%</td><td>100.0%</td><td>92.5%</td><td>100.0%</td><td>92.5%</td><td>4.9</td><td>4.9</td><td>493.2</td><td>1722.3</td><td>24.1</td><td>1.00×</td><td>100.0%</td><td>0</td><td>$0.0353</td></tr><tr><td>glm-5.3-flash (anybench) [enhanced] 200,000 tokens</td><td>z-ai/glm-5.3-flash</td><td>4</td><td>4</td><td>Unknown</td><td>75.0%</td><td>75.0%</td><td>25.0%–100.0%</td><td>100.0%</td><td>88.3%</td><td>75.0%</td><td>66.2%</td><td>15.3</td><td>15.3</td><td>121.1</td><td>346.5</td><td>20.3</td><td>1.00×</td><td>100.0%</td><td>0</td><td>$0.0060</td></tr><tr><td>gpt-6-luna-flex (anybench) [enhanced] 200,000 tokens</td><td>openai/gpt-6-luna</td><td>4</td><td>4</td><td>Unknown</td><td>100.0%</td><td>50.0%</td><td>0.0%–100.0%</td><td>100.0%</td><td>63.7%</td><td>100.0%</td><td>30.0%</td><td>62.4</td><td>31.2</td><td>52.9</td><td>81.5</td><td>51.4</td><td>1.00×</td><td>100.0%</td><td>0</td><td>$0.0057</td></tr><tr><td>qwen3.8-27b-free (anybench) [enhanced] 262,144 tokens</td><td>qwen/qwen3.8-27b:free</td><td>4</td><td>4</td><td>Unknown</td><td>0.0%</td><td>0.0%</td><td>0.0%–0.0%</td><td>100.0%</td><td>N/A</td><td>0.0%</td><td>0.0%</td><td>0.0</td><td>0.0</td><td>14.0</td><td>52.6</td><td>0.0</td><td>N/A</td><td>N/A</td><td>0</td><td>N/A</td></tr></tbody></table></div>
+<p class="muted">Throughput uses the union of active attempt intervals, excluding resume downtime. Speedup compares the lowest measured worker count.
+Efficiency divides speedup by the worker-count increase. Cost uses the supplied per-million-token rate card and excludes judging.</p>
+<h2>Accuracy vs speed</h2><svg viewBox="0 0 760 360" role="img" aria-label="Local test success versus completed attempts per active hour">
+<path d="M60 30 V310 H710" fill="none" stroke="#64748b"/><text x="8" y="50">100%</text><text x="20" y="310">0%</text><text x="460" y="345">Completed attempts / active hour</text><circle cx="85.3" cy="310.0" r="7" fill="#2563eb"><title>deepseek-v4.1-flash (anybench) [enhanced] 200,000 tokens: 0.0%, 2.5 attempts/hour</title></circle><circle cx="108.3" cy="50.0" r="7" fill="#2563eb"><title>deepseek-v4.1-flash-wafer-100 (anybench) [enhanced] 200,000 tokens: 100.0%, 4.9 attempts/hour</title></circle><circle cx="212.0" cy="115.0" r="7" fill="#2563eb"><title>glm-5.3-flash (anybench) [enhanced] 200,000 tokens: 75.0%, 15.3 attempts/hour</title></circle><circle cx="680.0" cy="180.0" r="7" fill="#2563eb"><title>gpt-6-luna-flex (anybench) [enhanced] 200,000 tokens: 50.0%, 62.4 attempts/hour</title></circle><circle cx="60.0" cy="310.0" r="7" fill="#2563eb"><title>qwen3.8-27b-free (anybench) [enhanced] 262,144 tokens: 0.0%, 0.0 attempts/hour</title></circle></svg>
+<p class="muted">Each point shows local test success and completed attempts per active hour. Hover for candidate details.</p>
+<h2>Dataset quality</h2><p>4 cases · 0 reconstructed groups · 4 with saved verification evidence</p><h2>Repeated attempts and diagnostics</h2><details><summary>Show statistical details</summary><pre>[
+  {
+    &quot;model&quot;: &quot;deepseek-v4.1-flash&quot;,
+    &quot;profile&quot;: &quot;enhanced&quot;,
+    &quot;concurrency&quot;: 4,
+    &quot;case_count&quot;: 4,
+    &quot;solve_within_k&quot;: {
+      &quot;1&quot;: {
+        &quot;rate&quot;: 0,
+        &quot;cases&quot;: 4
+      }
+    },
+    &quot;failure_categories&quot;: {
+      &quot;assertion_failure&quot;: 2,
+      &quot;step_limit&quot;: 1,
+      &quot;token_limit&quot;: 2,
+      &quot;setup_error&quot;: 1
+    },
+    &quot;retry_count&quot;: 0,
+    &quot;setup_seconds&quot;: 5.421289600992168,
+    &quot;model_seconds&quot;: 1295.8752117189651,
+    &quot;test_seconds&quot;: 75.05623729299987
+  },
+  {
+    &quot;model&quot;: &quot;deepseek-v4.1-flash-wafer-100&quot;,
+    &quot;profile&quot;: &quot;enhanced&quot;,
+    &quot;concurrency&quot;: 4,
+    &quot;case_count&quot;: 4,
+    &quot;solve_within_k&quot;: {
+      &quot;1&quot;: {
+        &quot;rate&quot;: 1,
+        &quot;cases&quot;: 4
+      }
+    },
+    &quot;failure_categories&quot;: {},
+    &quot;retry_count&quot;: 26,
+    &quot;setup_seconds&quot;: 15.490547024004627,
+    &quot;model_seconds&quot;: 2614.439387124061,
+    &quot;test_seconds&quot;: 91.14266728400253
+  },
+  {
+    &quot;model&quot;: &quot;glm-5.3-flash&quot;,
+    &quot;profile&quot;: &quot;enhanced&quot;,
+    &quot;concurrency&quot;: 4,
+    &quot;case_count&quot;: 4,
+    &quot;solve_within_k&quot;: {
+      &quot;1&quot;: {
+        &quot;rate&quot;: 0.75,
+        &quot;cases&quot;: 4
+      }
+    },
+    &quot;failure_categories&quot;: {
+      &quot;token_limit&quot;: 1,
+      &quot;assertion_failure&quot;: 1
+    },
+    &quot;retry_count&quot;: 0,
+    &quot;setup_seconds&quot;: 5.760324871997,
+    &quot;model_seconds&quot;: 578.3293896510368,
+    &quot;test_seconds&quot;: 77.50733561201196
+  },
+  {
+    &quot;model&quot;: &quot;gpt-6-luna-flex&quot;,
+    &quot;profile&quot;: &quot;enhanced&quot;,
+    &quot;concurrency&quot;: 4,
+    &quot;case_count&quot;: 4,
+    &quot;solve_within_k&quot;: {
+      &quot;1&quot;: {
+        &quot;rate&quot;: 0.5,
+        &quot;cases&quot;: 4
+      }
+    },
+    &quot;failure_categories&quot;: {
+      &quot;assertion_failure&quot;: 2
+    },
+    &quot;retry_count&quot;: 0,
+    &quot;setup_seconds&quot;: 5.5830364849898615,
+    &quot;model_seconds&quot;: 112.29968171304063,
+    &quot;test_seconds&quot;: 77.54286679399956
+  },
+  {
+    &quot;model&quot;: &quot;qwen3.8-27b-free&quot;,
+    &quot;profile&quot;: &quot;enhanced&quot;,
+    &quot;concurrency&quot;: 4,
+    &quot;case_count&quot;: 4,
+    &quot;solve_within_k&quot;: {
+      &quot;1&quot;: {
+        &quot;rate&quot;: 0,
+        &quot;cases&quot;: 4
+      }
+    },
+    &quot;failure_categories&quot;: {
+      &quot;error&quot;: 4,
+      &quot;assertion_failure&quot;: 4
+    },
+    &quot;retry_count&quot;: 0,
+    &quot;setup_seconds&quot;: 5.645188410999253,
+    &quot;model_seconds&quot;: 2.081204897003772,
+    &quot;test_seconds&quot;: 78.0712269670039
+  }
+]</pre></details><h2>Case outcomes</h2><div class="scroll"><table><thead><tr><th>Case</th><th>deepseek-v4.1-flash / anybench / enhanced / 4 workers</th><th>deepseek-v4.1-flash-wafer-100 / anybench / enhanced / 4 workers</th><th>glm-5.3-flash / anybench / enhanced / 4 workers</th><th>gpt-6-luna-flex / anybench / enhanced / 4 workers</th><th>qwen3.8-27b-free / anybench / enhanced / 4 workers</th></tr></thead><tbody><tr><th>fastapi-40b4ed6e-aadfcce76380</th><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td></tr><tr><th>sglang-f603ca61-752801e4d184</th><td>✗</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td></tr><tr><th>shadcn-ui-af7dde3c-04bb134c52af</th><td>✗</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr><tr><th>sqlalchemy-c61f5a4c-5503ac27c412</th><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td></tr></tbody></table></div><h2>Attempts and context</h2><div class="controls"><label>Search <input id="search" type="search"></label>
+<label>Status <select id="status"><option value="">All</option><option>completed</option><option>error</option><option>exhausted</option></select></label></div>
+<div class="scroll"><table id="attempts"><thead><tr><th>Case</th><th>Candidate</th><th>Attempt</th><th>Workers</th><th>Status</th><th>Test outcome</th><th>Judge</th><th>Seconds</th><th>Stop reason</th><th>Details</th></tr></thead><tbody><tr data-status="completed"><td>sglang-f603ca61-752801e4d184</td><td>deepseek-v4.1-flash / enhanced</td><td>1</td><td>4</td><td>completed</td><td>assertion_failure</td><td>0.0</td><td>146.5</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sglang-f603ca61-752801e4d184&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 8,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 9113,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 3,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="exhausted"><td>fastapi-40b4ed6e-aadfcce76380</td><td>deepseek-v4.1-flash / enhanced</td><td>1</td><td>4</td><td>exhausted</td><td>passed</td><td>N/A</td><td>391.8</td><td>step_limit</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;fastapi-40b4ed6e-aadfcce76380&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 20,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 23043,
+  &quot;stop_reason&quot;: &quot;step_limit&quot;,
+  &quot;verification_runs&quot;: 6,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="exhausted"><td>shadcn-ui-af7dde3c-04bb134c52af</td><td>deepseek-v4.1-flash / enhanced</td><td>1</td><td>4</td><td>exhausted</td><td>assertion_failure</td><td>N/A</td><td>545.7</td><td>token_limit</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;shadcn-ui-af7dde3c-04bb134c52af&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 15,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 47556,
+  &quot;stop_reason&quot;: &quot;token_limit&quot;,
+  &quot;verification_runs&quot;: 5,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sglang-f603ca61-752801e4d184</td><td>gpt-6-luna-flex / enhanced</td><td>1</td><td>4</td><td>completed</td><td>assertion_failure</td><td>0.5</td><td>86.2</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sglang-f603ca61-752801e4d184&quot;,
+  &quot;candidate&quot;: &quot;gpt-6-luna-flex&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 14,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 21196,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 2,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>fastapi-40b4ed6e-aadfcce76380</td><td>gpt-6-luna-flex / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.3</td><td>54.8</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;fastapi-40b4ed6e-aadfcce76380&quot;,
+  &quot;candidate&quot;: &quot;gpt-6-luna-flex&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 19,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 25142,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 5,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>shadcn-ui-af7dde3c-04bb134c52af</td><td>gpt-6-luna-flex / enhanced</td><td>1</td><td>4</td><td>completed</td><td>assertion_failure</td><td>0.85</td><td>51.0</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;shadcn-ui-af7dde3c-04bb134c52af&quot;,
+  &quot;candidate&quot;: &quot;gpt-6-luna-flex&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 15,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 20605,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 3,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sglang-f603ca61-752801e4d184</td><td>glm-5.3-flash / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.85</td><td>139.0</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sglang-f603ca61-752801e4d184&quot;,
+  &quot;candidate&quot;: &quot;glm-5.3-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 15,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 11180,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 5,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>fastapi-40b4ed6e-aadfcce76380</td><td>glm-5.3-flash / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>1.0</td><td>81.2</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;fastapi-40b4ed6e-aadfcce76380&quot;,
+  &quot;candidate&quot;: &quot;glm-5.3-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 9,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 4940,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 4,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="exhausted"><td>shadcn-ui-af7dde3c-04bb134c52af</td><td>glm-5.3-flash / enhanced</td><td>1</td><td>4</td><td>exhausted</td><td>assertion_failure</td><td>N/A</td><td>383.1</td><td>token_limit</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;shadcn-ui-af7dde3c-04bb134c52af&quot;,
+  &quot;candidate&quot;: &quot;glm-5.3-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 18,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 39586,
+  &quot;stop_reason&quot;: &quot;token_limit&quot;,
+  &quot;verification_runs&quot;: 4,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="error"><td>sglang-f603ca61-752801e4d184</td><td>qwen3.8-27b-free / enhanced</td><td>1</td><td>4</td><td>error</td><td>assertion_failure</td><td>N/A</td><td>58.8</td><td>error</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sglang-f603ca61-752801e4d184&quot;,
+  &quot;candidate&quot;: &quot;qwen3.8-27b-free&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 262144,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 1,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 1918,
+  &quot;stop_reason&quot;: &quot;error&quot;,
+  &quot;verification_runs&quot;: 0,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="error"><td>fastapi-40b4ed6e-aadfcce76380</td><td>qwen3.8-27b-free / enhanced</td><td>1</td><td>4</td><td>error</td><td>assertion_failure</td><td>N/A</td><td>10.9</td><td>error</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;fastapi-40b4ed6e-aadfcce76380&quot;,
+  &quot;candidate&quot;: &quot;qwen3.8-27b-free&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 262144,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 1,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 1833,
+  &quot;stop_reason&quot;: &quot;error&quot;,
+  &quot;verification_runs&quot;: 0,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="error"><td>shadcn-ui-af7dde3c-04bb134c52af</td><td>qwen3.8-27b-free / enhanced</td><td>1</td><td>4</td><td>error</td><td>assertion_failure</td><td>N/A</td><td>17.0</td><td>error</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;shadcn-ui-af7dde3c-04bb134c52af&quot;,
+  &quot;candidate&quot;: &quot;qwen3.8-27b-free&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 262144,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 1,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 2007,
+  &quot;stop_reason&quot;: &quot;error&quot;,
+  &quot;verification_runs&quot;: 0,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="exhausted"><td>sqlalchemy-c61f5a4c-5503ac27c412</td><td>deepseek-v4.1-flash / enhanced</td><td>1</td><td>4</td><td>exhausted</td><td>setup_error</td><td>N/A</td><td>332.2</td><td>token_limit</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sqlalchemy-c61f5a4c-5503ac27c412&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 19,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 29495,
+  &quot;stop_reason&quot;: &quot;token_limit&quot;,
+  &quot;verification_runs&quot;: 2,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sqlalchemy-c61f5a4c-5503ac27c412</td><td>gpt-6-luna-flex / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.9</td><td>38.9</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sqlalchemy-c61f5a4c-5503ac27c412&quot;,
+  &quot;candidate&quot;: &quot;gpt-6-luna-flex&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 15,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 16263,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 2,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sqlalchemy-c61f5a4c-5503ac27c412</td><td>glm-5.3-flash / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.8</td><td>103.2</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sqlalchemy-c61f5a4c-5503ac27c412&quot;,
+  &quot;candidate&quot;: &quot;glm-5.3-flash&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 12,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 8708,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 5,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="error"><td>sqlalchemy-c61f5a4c-5503ac27c412</td><td>qwen3.8-27b-free / enhanced</td><td>1</td><td>4</td><td>error</td><td>assertion_failure</td><td>N/A</td><td>8.8</td><td>error</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sqlalchemy-c61f5a4c-5503ac27c412&quot;,
+  &quot;candidate&quot;: &quot;qwen3.8-27b-free&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 262144,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 1,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 2159,
+  &quot;stop_reason&quot;: &quot;error&quot;,
+  &quot;verification_runs&quot;: 0,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sglang-f603ca61-752801e4d184</td><td>deepseek-v4.1-flash-wafer-100 / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.9</td><td>177.0</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sglang-f603ca61-752801e4d184&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash-wafer-100&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 24,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 26198,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 9,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>fastapi-40b4ed6e-aadfcce76380</td><td>deepseek-v4.1-flash-wafer-100 / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>1.0</td><td>96.0</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;fastapi-40b4ed6e-aadfcce76380&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash-wafer-100&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 17,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 16781,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 7,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>shadcn-ui-af7dde3c-04bb134c52af</td><td>deepseek-v4.1-flash-wafer-100 / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.95</td><td>1883.4</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;shadcn-ui-af7dde3c-04bb134c52af&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash-wafer-100&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 71,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 130989,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 34,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr><tr data-status="completed"><td>sqlalchemy-c61f5a4c-5503ac27c412</td><td>deepseek-v4.1-flash-wafer-100 / enhanced</td><td>1</td><td>4</td><td>completed</td><td>passed</td><td>0.85</td><td>809.4</td><td>completed</td><td><details><summary>Inspect</summary><pre>{
+  &quot;case&quot;: &quot;sqlalchemy-c61f5a4c-5503ac27c412&quot;,
+  &quot;candidate&quot;: &quot;deepseek-v4.1-flash-wafer-100&quot;,
+  &quot;attempt&quot;: 1,
+  &quot;context_window_tokens&quot;: 200000,
+  &quot;harness_version&quot;: &quot;anybench-context-v2&quot;,
+  &quot;model_calls_by_purpose&quot;: {
+    &quot;main&quot;: 52,
+    &quot;subagent&quot;: 0,
+    &quot;compaction&quot;: 0
+  },
+  &quot;compactions&quot;: 0,
+  &quot;Compaction calls&quot;: 0,
+  &quot;peak_context_tokens&quot;: 71703,
+  &quot;stop_reason&quot;: &quot;completed&quot;,
+  &quot;verification_runs&quot;: 21,
+  &quot;grouped_commits&quot;: 0,
+  &quot;dataset_verification&quot;: &quot;verified&quot;
+}</pre></details></td></tr></tbody></table></div>
+<p class="muted">Private patches and logs omitted. Use --include-private for local debugging.</p>
+</main><script>
+const input=document.getElementById('search'),status=document.getElementById('status');
+function filter(){document.querySelectorAll('#attempts tbody tr').forEach(r=>{r.hidden=!(r.textContent.toLowerCase().includes(input.value.toLowerCase())&&(!status.value||r.dataset.status===status.value))})}
+if(input){input.addEventListener('input',filter);status.addEventListener('change',filter)}
+document.querySelectorAll('table thead th').forEach((th)=>{th.tabIndex=0;th.setAttribute('role','button');
+function sort(){const table=th.closest('table'),body=table.tBodies[0],index=Array.from(th.parentNode.children).indexOf(th);const dir=th.dataset.direction==='up'?-1:1;th.dataset.direction=dir===1?'up':'down';th.setAttribute('aria-sort',dir===1?'ascending':'descending');
+Array.from(body.rows).sort((a,b)=>a.cells[index].textContent.localeCompare(b.cells[index].textContent,undefined,{numeric:true})*dir).forEach(row=>body.appendChild(row))}
+th.addEventListener('click',sort);th.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();sort()}})})
+</script></body></html>
