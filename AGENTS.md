@@ -28,7 +28,7 @@ Use short, imperative commit subjects such as `Validate sandbox test commands`. 
 
 ## Versioning
 
-Bump the AnyBench package version for every committed change, including documentation and other small changes. Keep `pyproject.toml` and `src/anybench/__init__.py` in sync. For a major feature or substantial behavior change, increment the middle component and reset the patch component (`y.x.z` → `y.(x+1).0`). For a minor change or fix, increment the patch component (`y.x.z` → `y.x.(z+1)`). Do not create or push a release tag unless publishing a release is explicitly requested.
+Bump the AnyBench package version for every committed change, including documentation and other small changes. Keep `pyproject.toml` and `src/anybench/__init__.py` in sync. For a major feature or substantial behavior change, increment the middle component and reset the patch component (`y.x.z` → `y.(x+1).0`). For a minor change or fix, increment the patch component (`y.x.z` → `y.x.(z+1)`). Every version bump is a release: after the commit passes CI, create and push its matching `vX.Y.Z` tag, let the release workflow publish to PyPI, and verify the published version and installation. Follow `docs/releasing.md`; if a release gate fails, fix it and finish the release before treating the change as complete.
 
 ## Security & Configuration
 
