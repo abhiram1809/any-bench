@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-28 01:45 UTC",
+  "candidate": {
+    "model": "deepseek/deepseek-v4.1-flash",
+    "provider": "wafer",
+    "reasoning_enabled": true,
+    "allow_fallbacks": false
+  },
+  "step_cap": 100,
+  "attempt_policy": "One selected final completed attempt per case after bounded HTTP retries and token-cap reruns; not pass@1",
+  "verified_cases": 4,
+  "completed_local_solves": 4,
+  "mean_judge_score": 0.925,
+  "cases": [
+    {
+      "repository": "SGLang",
+      "upstream_commit": "752801e4d184574f9c4f860b7c0dcab9f4ed6d93",
+      "base_test": "assertion_failure",
+      "reference_test": "passed",
+      "candidate_status": "completed",
+      "candidate_test": "passed",
+      "candidate_test_exit_code": 0,
+      "validation_image_matched_run": true,
+      "model_calls": 24,
+      "total_token_cap": 1000000,
+      "judge_score": 0.9
+    },
+    {
+      "repository": "FastAPI",
+      "upstream_commit": "aadfcce76380ab169fe172d5cda21722e53c4924",
+      "base_test": "assertion_failure",
+      "reference_test": "passed",
+      "candidate_status": "completed",
+      "candidate_test": "passed",
+      "candidate_test_exit_code": 0,
+      "validation_image_matched_run": true,
+      "model_calls": 17,
+      "total_token_cap": 1000000,
+      "judge_score": 1.0
+    },
+    {
+      "repository": "shadcn/ui",
+      "upstream_commit": "04bb134c52af23af7d77673618ef4e3862b7c310",
+      "base_test": "assertion_failure",
+      "reference_test": "passed",
+      "candidate_status": "completed",
+      "candidate_test": "passed",
+      "candidate_test_exit_code": 0,
+      "validation_image_matched_run": true,
+      "model_calls": 71,
+      "total_token_cap": 3000000,
+      "judge_score": 0.95
+    },
+    {
+      "repository": "SQLAlchemy",
+      "upstream_commit": "5503ac27c412cf99baa838db98bf10a8f1e26f16",
+      "base_test": "assertion_failure",
+      "reference_test": "passed",
+      "candidate_status": "completed",
+      "candidate_test": "passed",
+      "candidate_test_exit_code": 0,
+      "validation_image_matched_run": true,
+      "model_calls": 52,
+      "total_token_cap": 3000000,
+      "judge_score": 0.85
+    }
+  ],
+  "earlier_20_step_baseline": [
+    {
+      "model": "glm-5.3-flash",
+      "completed_local_solves": 3,
+      "attempts": 4
+    },
+    {
+      "model": "gpt-6-luna-flex",
+      "completed_local_solves": 2,
+      "attempts": 4
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "completed_local_solves": 0,
+      "attempts": 4
+    }
+  ],
+  "qwen_provider_outcome": "HTTP 429 on all four cases; coding performance unavailable",
+  "limitations": [
+    "Four focused regression cases, not full upstream suites",
+    "Final 100-step results selected after retries and reruns",
+    "Different limits and run times from earlier baseline"
+  ]
+}

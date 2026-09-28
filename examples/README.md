@@ -1,5 +1,12 @@
 # Public library benchmark examples
 
+The [DeepSeek Wafer 100-step case study](deepseek-wafer-100/README.md) reports
+four Docker-verified historical cases across SGLang, FastAPI, shadcn/ui, and
+SQLAlchemy. Its [benchmark report](deepseek-wafer-100/benchmark.html) compares
+the final DeepSeek campaign result with earlier 20-step model runs and explains
+why their limits are not directly comparable. This is a report-only example;
+the original private campaign artifacts are not included.
+
 On 2026-09-25, AnyBench inspected the five then-recent commits in each of [Humanize](humanize/README.md) and [Boltons](boltons/README.md). GLM-5.3 Flash built six cases from ten commits. We reviewed the generated problem statements and test commands, verified five cases in Docker, and skipped one translation workflow that needed unavailable gettext tooling. Qwen3.8-27B completed and passed three of the five verified cases. The two other attempts reached the token budget. GLM-5.3 Flash judged the three completed attempts with a mean score of 0.90.
 
 The checked-in `cases.csv` files contain the reviewed problems, private evaluator commands, and historical reference diffs. Their `repository` fields use public Git URLs so they can be replayed outside the original machine. `results.json` records the commits, changed files, parent/reference validation, and candidate outcomes. These are a small diagnostic sample, not a stable model ranking.
