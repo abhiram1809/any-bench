@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from getpass import getpass
 from html import escape
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -94,6 +95,10 @@ def _public_model(entry: dict) -> dict:
 
 
 def _validate_config(config: dict) -> None:
+    budget = config.get("budget_usd")
+    if budget is not None and (type(budget) not in (int, float) or
+                               not math.isfinite(budget) or budget < 0):
+        raise ValueError("budget_usd must be a non-negative finite number")
     if not isinstance(config.get("repositories"), list) or not all(
             isinstance(value, str) and value for value in config["repositories"]):
         raise ValueError("Config repositories must be a list of paths or Git URLs")
@@ -351,7 +356,8 @@ def _diagnostic_report(session: Path, diagnostics: list[dict]) -> Path:
 
 def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
           commits: int | None = None, max_problems: int | None = None,
-          resume: Path | None = None, *, confirmed: bool = False) -> Path:
+          resume: Path | None = None, *, confirmed: bool = False,
+          dataset: Path | None = None) -> Path:
     if commits is not None and commits < 1 or max_problems is not None and max_problems < 1:
         raise ValueError("--commits and --max-problems must be positive")
     config_path = config_path.expanduser()
@@ -373,15 +379,23 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
     if resume:
         session = resume.resolve()
         settings = json.loads((session / "session.json").read_text())
-        if repositories or commits is not None or max_problems is not None:
+        if repositories or commits is not None or max_problems is not None or dataset is not None:
             raise ValueError("Resume uses frozen repositories and limits; omit those options")
         if settings["models_sha256"] != fingerprint([_public_model(item) for item in config["models"]]):
             raise ValueError("Model settings changed since this session started")
         repositories = settings["repositories"]
         commits = settings["commits"]
         max_problems = settings["max_problems"]
+        dataset = Path(settings["dataset_path"]) if settings.get("dataset_path") else None
     else:
-        repositories = repositories or config["repositories"]
+        repositories = repositories or ([] if dataset is not None else config["repositories"])
+        if dataset is not None:
+            imported_cases = read_cases(dataset.expanduser().resolve(strict=True))
+            if not imported_cases:
+                raise ValueError("Custom dataset has no cases")
+            if len({case.case_id for case in imported_cases}) != len(imported_cases):
+                raise ValueError("Custom dataset case IDs must be unique")
+            repositories = repositories or list(dict.fromkeys(case.repository for case in imported_cases))
         if not repositories:
             raise ValueError("Provide at least one repository")
         commits = commits or 50
@@ -400,20 +414,35 @@ def start(repositories: list[str], config_path: Path = DEFAULT_CONFIG,
             raise ValueError("Benchmark cancelled before paid model calls")
         private_json(session / "session.json", {"repositories": repositories, "commits": commits,
                      "max_problems": max_problems,
+                     "dataset_path": str(dataset.expanduser().resolve()) if dataset else None,
                      "config_path": str(config_path.resolve()),
                      "models_sha256": fingerprint([_public_model(item) for item in config["models"]])})
     from .cli import main
     from .live import checkpoint, emit, observer
     if observer():
         observer().set_meta("session_path", str(session.resolve()))
+        observer().set_meta("budget_usd", config.get("budget_usd"))
+        observer().set_meta("pricing", {item["name"]: {
+            "input": item.get("input_price_per_million"),
+            "output": item.get("output_price_per_million")}
+            for item in config["models"]})
+        observer().set_meta("dataset_source", str(dataset) if dataset else "git_history")
     cases_path = session / "cases.csv"
     if not cases_path.exists() or (session / "cases.csv.manifest.json").exists() and not (session / "build.done").exists():
-        args = ["build", *repositories, "--models", str(role_files["builder"]), "--builder",
-                next(item["name"] for item in config["models"] if item["role"] == "builder"),
-                "--commits", str(commits), "--output", str(cases_path)]
-        if cases_path.exists():
-            args.append("--resume")
-        main(args)
+        if dataset is not None:
+            imported_cases = read_cases(dataset.expanduser().resolve(strict=True))
+            if any(case.repository not in repositories for case in imported_cases):
+                raise ValueError("Custom dataset contains a repository outside this run")
+            write_cases(cases_path, imported_cases)
+            emit("dataset.imported", "builder", {"cases": len(imported_cases),
+                                                 "source": str(dataset)})
+        else:
+            args = ["build", *repositories, "--models", str(role_files["builder"]), "--builder",
+                    next(item["name"] for item in config["models"] if item["role"] == "builder"),
+                    "--commits", str(commits), "--output", str(cases_path)]
+            if cases_path.exists():
+                args.append("--resume")
+            main(args)
         if observer() and observer().controller.stopping:
             return _diagnostic_report(session, [{"status": "skipped", "reason": "Stopped during dataset building"}])
         (session / "build.done").touch(mode=0o600)

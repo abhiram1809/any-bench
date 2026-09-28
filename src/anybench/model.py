@@ -102,6 +102,8 @@ class ModelConfig:
     max_total_tokens: int | None = None
     attempt_timeout: int | None = None
     request_timeout: int | None = None
+    input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.temperature) not in (int, float) or not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2:
@@ -159,6 +161,11 @@ class ModelConfig:
             raise ValueError("context_window_tokens must leave room for input and output")
         if self.max_retries < 0 or self.harness_timeout < 1:
             raise ValueError("Retry count and harness timeout must be valid")
+        for name in ("input_price_per_million", "output_price_per_million"):
+            value = getattr(self, name)
+            if value is not None and (type(value) not in (int, float) or
+                                      not math.isfinite(value) or value < 0):
+                raise ValueError(f"{name} must be a non-negative finite number")
         if self.api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",
                                                  self.api_key_env):
             raise ValueError("api_key_env must be an environment variable name")

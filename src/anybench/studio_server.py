@@ -161,8 +161,6 @@ def create_app():
             raise HTTPException(400, "Expected a configuration object")
         try:
             _validate_config(document)
-            for item in document["models"]:
-                ModelConfig(**{k: v for k, v in item.items() if k != "api_key"})
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
         path = Path(".anybench/config.json")
@@ -221,6 +219,31 @@ def create_app():
                                     if name in document)}
         raise HTTPException(400, "Import a guided configuration, model JSON, or command TOML")
 
+    @app.post(prefix + "/datasets/import")
+    async def import_dataset(request: Request):
+        authorized(request)
+        body = await request.json()
+        source = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(source, str) or len(source.encode("utf-8")) > 10_000_000:
+            raise HTTPException(400, "Provide an AnyBench cases CSV under 10 MB")
+        directory = Path(".anybench/studio_imports")
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = directory / (uuid.uuid4().hex + ".csv")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(source)
+            cases = read_cases(path)
+            if not cases:
+                raise ValueError("Dataset has no cases")
+            if len({case.case_id for case in cases}) != len(cases):
+                raise ValueError("Dataset case IDs must be unique")
+        except (OSError, UnicodeError, ValueError) as exc:
+            path.unlink(missing_ok=True)
+            raise HTTPException(400, str(exc)) from exc
+        return {"path": str(path), "cases": len(cases),
+                "repositories": list(dict.fromkeys(case.repository for case in cases))}
+
     @app.get(prefix + "/runs")
     def runs(request: Request):
         authorized(request)
@@ -248,9 +271,23 @@ def create_app():
         mode = body.get("mode", "guided")
         if mode == "guided":
             repositories = body.get("repositories") or []
+            dataset_path = body.get("dataset_path")
+            dataset_cases = None
+            if dataset_path:
+                if not isinstance(dataset_path, str):
+                    raise HTTPException(400, "Dataset path must be a string")
+                try:
+                    dataset_cases = read_cases(Path(dataset_path).expanduser().resolve(strict=True))
+                except (OSError, ValueError) as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                if not dataset_cases or len({case.case_id for case in dataset_cases}) != len(dataset_cases):
+                    raise HTTPException(400, "Dataset needs unique, nonempty case IDs")
+                repositories = repositories or list(dict.fromkeys(case.repository for case in dataset_cases))
             if not isinstance(repositories, list) or not repositories or not all(
                     isinstance(item, str) and item for item in repositories):
                 raise HTTPException(400, "Provide repository paths or Git URLs")
+            if dataset_cases and any(case.repository not in repositories for case in dataset_cases):
+                raise HTTPException(400, "Dataset contains a repository outside this run")
             config_path = Path(body.get("config_path") or ".anybench/config.json")
             if not config_path.is_file():
                 raise HTTPException(400, "Configuration file is missing")
@@ -261,6 +298,8 @@ def create_app():
             except (ValueError, KeyError, TypeError) as exc:
                 raise HTTPException(400, str(exc)) from exc
             command = ["start", *repositories, "--config", str(config_path), "--yes"]
+            if dataset_path:
+                command.extend(["--dataset", str(Path(dataset_path).expanduser().resolve())])
             for field, flag in (("commits", "--commits"), ("max_problems", "--max-problems")):
                 value = body.get(field)
                 if value is not None:
@@ -268,11 +307,20 @@ def create_app():
                         raise HTTPException(400, field + " must be positive")
                     command.extend([flag, str(value)])
             workload = {"repositories": len(repositories),
-                        "maximum_commits": len(repositories) * (body.get("commits") or 50),
+                        "maximum_commits": 0 if dataset_cases else len(repositories) * (body.get("commits") or 50),
+                        "custom_dataset_cases": len(dataset_cases) if dataset_cases else None,
                         "maximum_problems": body.get("max_problems"),
                         "candidate_models": sum(item.get("role") == "candidate"
                                                 for item in configuration["models"]),
-                        "judge": any(item.get("role") == "judge" for item in configuration["models"])}
+                        "judge": any(item.get("role") == "judge" for item in configuration["models"]),
+                        "harnesses": {item["name"]: item.get("harness", "anybench")
+                                      for item in configuration["models"] if item.get("role") == "candidate"},
+                        "budget_usd": configuration.get("budget_usd")}
+            if dataset_cases:
+                workload["test_commands"] = [
+                    {"case_id": case.case_id, "command": case.test_command}
+                    for case in dataset_cases[:20]]
+                workload["test_commands_shown"] = min(20, len(dataset_cases))
         elif mode == "advanced":
             command = body.get("argv")
             if not isinstance(command, list) or not command or not all(isinstance(v, str) for v in command):

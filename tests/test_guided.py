@@ -134,6 +134,36 @@ class GuidedTests(unittest.TestCase):
                 if file.is_file():
                     self.assertNotIn("literal-builder-key", file.read_text())
 
+    def test_start_imports_custom_cases_without_builder_calls(self):
+        with temporary_cwd():
+            config = {"repositories": ["another-repo"],
+                      "models": [model("builder", "builder", api_key_env="BUILDER_KEY"),
+                                 model("candidate", "candidate", api_key_env="CANDIDATE_KEY")]}
+            private_json(Path(".anybench/config.json"), config)
+            source = Path("custom.csv")
+            write_cases(source, [Case("custom-1", "repo-from-csv", "a" * 40, "b" * 40,
+                                      "Fix imported behavior", "", "diff", "true")])
+            calls = []
+
+            def fake_main(argv):
+                calls.append(argv[0])
+                if argv[0] == "report":
+                    Path(argv[argv.index("--output") + 1]).write_text("<html>report</html>")
+                else:
+                    Path(argv[argv.index("--output") + 1]).write_text("")
+
+            with patch.dict(os.environ, {"BUILDER_KEY": "b", "CANDIDATE_KEY": "c"}), \
+                 patch("anybench.guided._prerequisites") as prerequisites, \
+                 patch("anybench.guided._prepare_image", return_value=("test-image", "")), \
+                 patch("anybench.guided.validation_results",
+                       return_value=[{"case_id": "custom-1", "status": "verified", "reason": ""}]), \
+                 patch("anybench.cli.main", side_effect=fake_main):
+                report = start([], dataset=source, confirmed=True)
+            self.assertEqual(calls, ["run", "report"])
+            prerequisites.assert_called_once_with(["repo-from-csv"])
+            self.assertEqual(read_cases(report.parent / "cases.csv")[0].case_id, "custom-1")
+            self.assertEqual(read_cases(report.parent / "verified.csv")[0].case_id, "custom-1")
+
     def test_image_build_has_one_paid_repair_and_reuses_saved_recipe(self):
         with temporary_cwd() as root:
             session = root / "session"

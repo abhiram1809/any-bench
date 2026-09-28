@@ -50,6 +50,8 @@ anybench studio
 
 Studio shows the full builder → environment → verification → candidate → evaluation → judge → report pipeline as a live whiteboard. Select a stage, problem, or attempt to inspect prompts, tools, Docker activity, logs, tests, timing, and scores. Start a guided run in the browser, or add `--live` to `anybench start`, `build`, `validate`, `run`, or `evaluate` to watch a CLI run. Existing CLI workflows work without the Studio extra.
 
+Studio also lets you choose the candidate harness, set built-in client retries, import an AnyBench cases CSV, and view an instruction-to-tool trace with provider-reported token usage. Configure per-model token prices and an optional budget to see estimated spend and remaining budget. To use a custom CSV from the CLI, pass `--dataset /path/to/cases.csv` to `anybench start`.
+
 While a run is active, Studio can adjust candidate concurrency, pause new work, resume, or stop gracefully. Runtime concurrency changes are marked in the report so they are not presented as fixed-load comparisons. See [Studio details](docs/studio.md) for controls, data visibility, and safe resume behavior.
 
 ## Models and API keys

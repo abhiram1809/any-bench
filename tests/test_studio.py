@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,11 +14,26 @@ from unittest.mock import patch
 
 from anybench.live import RunObserver, activate, emit, snapshot, stage_scope, submit_control
 from anybench.model import Case, ModelConfig, RunRecord, write_cases, write_jsonl
+from anybench.providers import ProtocolAdapter
 from anybench.report import report
 from anybench.runner import run_cases
 
 
 class LiveStoreTests(unittest.TestCase):
+    def test_provider_reasoning_usage_is_separate_from_output(self):
+        chat = ProtocolAdapter(ModelConfig("chat", model="example", base_url="http://localhost:1"))
+        reply = chat.reply({"choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                            "usage": {"prompt_tokens": 80, "completion_tokens": 30,
+                                      "completion_tokens_details": {"reasoning_tokens": 18}}}, .1)
+        self.assertEqual((reply.prompt_tokens, reply.completion_tokens, reply.reasoning_tokens),
+                         (80, 30, 18))
+        responses = ProtocolAdapter(ModelConfig("responses", model="example", api="responses",
+                                                base_url="http://localhost:1"))
+        reply = responses.reply({"output": [], "usage": {"input_tokens": 20,
+                                "output_tokens": 12,
+                                "output_tokens_details": {"reasoning_tokens": 7}}}, .1)
+        self.assertEqual(reply.reasoning_tokens, 7)
+
     def test_event_order_and_idempotent_controls(self):
         with tempfile.TemporaryDirectory() as directory:
             run = RunObserver(root=Path(directory))
@@ -185,6 +201,45 @@ class LiveStoreTests(unittest.TestCase):
 
 
 class StudioApiTests(unittest.TestCase):
+    def test_imported_dataset_is_validated_for_guided_launch(self):
+        try:
+            from fastapi.testclient import TestClient
+        except (ImportError, RuntimeError):
+            self.skipTest("Studio API test client unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                config = {"repositories": [], "models": [
+                    {"name": "builder", "role": "builder", "model": "local",
+                     "base_url": "http://localhost:1", "api_key_env": "BUILDER_KEY"},
+                    {"name": "candidate", "role": "candidate", "model": "local",
+                     "base_url": "http://localhost:1", "api_key_env": "CANDIDATE_KEY"}]}
+                Path(".anybench").mkdir()
+                Path(".anybench/config.json").write_text(json.dumps(config))
+                csv_path = Path("source.csv")
+                write_cases(csv_path, [Case("own-1", "my-repo", "a" * 40, "b" * 40,
+                                            "Fix", "", "diff", "true")])
+                with patch("anybench.live.ROOT", root / "live"), \
+                     patch("anybench.studio_server.ROOT", root / "live"):
+                    from anybench.studio_server import create_app, token
+                    with TestClient(create_app(), base_url="http://localhost:8765") as client:
+                        client.get("/auth", params={"credential": token()})
+                        imported = client.post("/api/experimental/v1/datasets/import",
+                                               json={"text": csv_path.read_text()})
+                        self.assertEqual(imported.status_code, 200)
+                        body = {"mode": "guided", "repositories": [],
+                                "dataset_path": imported.json()["path"]}
+                        plan = client.post("/api/experimental/v1/runs/validate", json=body)
+                        self.assertEqual(plan.status_code, 200)
+                        self.assertEqual(plan.json()["workload"]["custom_dataset_cases"], 1)
+                        self.assertEqual(plan.json()["workload"]["maximum_commits"], 0)
+                        self.assertIn("--dataset", plan.json()["command"])
+                        self.assertEqual(client.post("/api/experimental/v1/datasets/import",
+                                                     json={"text": "invalid"}).status_code, 400)
+            finally:
+                os.chdir(old_cwd)
     def test_browser_launch_does_not_persist_raw_worker_output(self):
         try:
             from fastapi.testclient import TestClient

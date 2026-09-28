@@ -61,6 +61,7 @@ class ChatClient:
         self.cache_creation_tokens: int | None = None
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.reasoning_tokens = 0
         self.events: list[dict] = []
         self.usage_available = True
         self.started = time.monotonic()
@@ -169,6 +170,7 @@ class ChatClient:
         self.usage_available = self.usage_available and bool(data.get("usage"))
         self.prompt_tokens += reply.prompt_tokens
         self.completion_tokens += reply.completion_tokens
+        self.reasoning_tokens += reply.reasoning_tokens or 0
         if reply.cached_prompt_tokens is not None:
             self.cached_prompt_tokens = (self.cached_prompt_tokens or 0) + reply.cached_prompt_tokens
         if reply.cache_creation_tokens is not None:
@@ -181,6 +183,10 @@ class ChatClient:
             active.emit("model.response", self.config.role,
                         {"seconds": reply.seconds, "prompt_tokens": reply.prompt_tokens,
                          "completion_tokens": reply.completion_tokens,
+                         "reasoning_tokens": reply.reasoning_tokens,
+                         "content_tokens": max(0, reply.completion_tokens - reply.reasoning_tokens)
+                         if reply.reasoning_tokens is not None else None,
+                         "usage_available": bool(data.get("usage")),
                          "response": active.artifact(reply.message)},
                         model=self.config.name, operation_id=operation_id)
             active.operation_end(operation_id, self.config.role, "completed")

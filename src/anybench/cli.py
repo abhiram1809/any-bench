@@ -135,6 +135,7 @@ def _main(argv: list[str] | None = None) -> None:
     guided.add_argument("--config", type=Path, default=Path(".anybench/config.json"))
     guided.add_argument("--commits", type=int)
     guided.add_argument("--max-problems", type=int)
+    guided.add_argument("--dataset", type=Path, help="Use an existing AnyBench cases CSV instead of building from Git history")
     guided.add_argument("--resume", type=Path, metavar="SESSION")
     guided.add_argument("--yes", action="store_true", help="Use a preconfirmed launch from Experimental Studio")
     studio = commands.add_parser("studio", help="Experimental local benchmark workspace")
@@ -238,7 +239,7 @@ def _main(argv: list[str] | None = None) -> None:
     elif args.command == "start":
         from .guided import start
         start(args.repositories, args.config, args.commits, args.max_problems, args.resume,
-              confirmed=args.yes)
+              confirmed=args.yes, dataset=args.dataset)
     elif args.command == "build":
         if not _distinct_paths(args.models, args.output):
             parser.error("Build model config and output paths must differ")

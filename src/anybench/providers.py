@@ -15,6 +15,7 @@ class Reply:
     seconds: float = 0.0
     cached_prompt_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
 
@@ -103,7 +104,8 @@ class ProtocolAdapter:
         if self.config.api == "chat_completions":
             return Reply(data["choices"][0]["message"], usage.get("prompt_tokens", 0),
                          usage.get("completion_tokens", 0), seconds,
-                         (usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
+                         (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), None,
+                         (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"))
         if self.config.api == "responses":
             output = data.get("output", [])
             calls = [{"id": item["call_id"], "function": {"name": item["name"],
@@ -115,7 +117,8 @@ class ProtocolAdapter:
             return Reply({"role": "assistant", "content": content, "tool_calls": calls,
                           "_raw_output": output},
                          usage.get("input_tokens", 0), usage.get("output_tokens", 0), seconds,
-                         (usage.get("input_tokens_details") or {}).get("cached_tokens"))
+                         (usage.get("input_tokens_details") or {}).get("cached_tokens"), None,
+                         (usage.get("output_tokens_details") or {}).get("reasoning_tokens"))
         blocks = data.get("content", [])
         calls = [{"id": item["id"], "function": {"name": item["name"],
                   "arguments": json.dumps(item["input"])}} for item in blocks
