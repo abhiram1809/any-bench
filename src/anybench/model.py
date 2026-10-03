@@ -253,6 +253,7 @@ class RunRecord:
     artifact_directory: str = ""
     verification_runs: list[dict] | None = None
     stop_reason: str = ""
+    provider_host: str | None = None
 
 
 def write_jsonl(path: Path, records: list[RunRecord]) -> None:

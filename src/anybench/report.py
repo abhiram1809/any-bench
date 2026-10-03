@@ -5,6 +5,7 @@ import html
 import json
 from pathlib import Path
 
+from .branding import catalog
 from .metadata import case_metadata
 from .metrics import summary
 from .model import RunRecord, _private_opener
@@ -31,9 +32,22 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
         previous = baselines.get(identity)
         if previous is None or group['concurrency'] < previous['concurrency']:
             baselines[identity] = group
-    rows, points = [], []
+    rows, compact_rows, points, cards, legend = [], [], [], [], []
+    palette = ['#547b36', '#5279a4', '#b48043', '#9877ae', '#42998a', '#bd6c70']
+
+    def brand_chip(brand: dict, kind: str) -> str:
+        icon = catalog()['icons'].get(brand['icon'], catalog()['icons']['generic'])
+        return (f'<span class="brand-chip" title="{kind}: {escape(brand["label"])}">'
+                f'<img src="{icon}" alt="" width="25" height="25">'
+                f'<span class="sr-only">{kind}: </span>{escape(brand["label"])}</span>')
+
+    def brand_row(group: dict) -> str:
+        brands = group['branding']
+        return ('<div class="brand-row">' + brand_chip(brands['harness'], 'Harness') +
+                ''.join(brand_chip(brand, 'Provider') for brand in brands['providers']) + '</div>')
     maximum = max([g['throughput'] for g in groups] or [1]) or 1
-    for group in groups:
+    for index, group in enumerate(groups):
+        color = palette[index % len(palette)]
         label = f"{group['model']} ({group['harness']}) [{group['profile']}]"
         if group['context_window_tokens'] is not None:
             label += f" {group['context_window_tokens']:,} tokens"
@@ -58,11 +72,29 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
                   number(output_rate), f'{speedup:.2f}×' if speedup is not None else 'N/A',
                   percent(efficiency), group['usage_missing_attempts'],
                   f"${group['estimated_cost']:.4f}" if group['estimated_cost'] is not None else 'N/A']
-        rows.append('<tr>' + ''.join(f'<td>{escape(value)}</td>' for value in values) + '</tr>')
+        identity_cell = f'<td><strong>{escape(label)}</strong>{brand_row(group)}</td>'
+        rows.append('<tr>' + identity_cell + ''.join(f'<td>{escape(value)}</td>' for value in values[1:]) + '</tr>')
+        compact_rows.append('<tr>' + identity_cell + ''.join(f'<td>{escape(values[i])}</td>'
+                            for i in [2, 3, 4, 6, 8, 10, 12, 14, 20]) + '</tr>')
+        accuracy = group['test_accuracy']
+        width = (accuracy or 0) * 100
+        cards.append(f'<article class="candidate-card" style="--series:{color}">'
+                     f'<div class="candidate-head"><h3>{escape(group["model"])}</h3>'
+                     f'<span class="badge">{escape(values[2])} workers</span></div>'
+                     f'<div class="model-id">{escape(group["model_id"] or "Model ID unavailable")}</div>'
+                     f'{brand_row(group)}<div class="candidate-score"><strong>{percent(accuracy)}</strong>'
+                     '<span>local test success</span></div>'
+                     f'<div class="score-track" aria-hidden="true"><span style="width:{width:.2f}%"></span></div>'
+                     f'<div class="candidate-meta"><span>Attempts<strong>{group["attempts"]}</strong></span>'
+                     f'<span>Throughput<strong>{number(group["throughput"])}/h</strong></span>'
+                     f'<span>Latency p50<strong>{number(group["latency_p50"])}s</strong></span></div>'
+                     f'<p class="candidate-context">[{escape(group["profile"])}] · {escape(values[4])} · '
+                     f'Test coverage {percent(group["test_coverage"])}</p></article>')
+        legend.append(f'<span><i class="legend-dot" style="--series:{color}"></i>{escape(label)}</span>')
         score = group['test_accuracy']
         if score is not None:
             points.append(f'<circle cx="{60 + group["throughput"] / maximum * 620:.1f}" '
-                          f'cy="{310 - score * 260:.1f}" r="7" fill="#2563eb"><title>'
+                          f'cy="{310 - score * 260:.1f}" r="7" class="chart-point" fill="{color}"><title>'
                           f'{escape(label)}: {percent(score)}, {number(group["throughput"])} attempts/hour</title></circle>')
     details = ''
     if not aggregate_only:
@@ -89,7 +121,7 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
                       record.judge_score, number(record.seconds), record.stop_reason or record.status]
             attempt_rows.append(f'<tr data-status="{escape(record.status)}">' +
                                 ''.join(f'<td>{escape(value)}</td>' for value in values) +
-                                '<td><details><summary>Inspect</summary><pre>' +
+                                '<td class="attempt-details"><details><summary>Inspect</summary><pre>' +
                                 escape(json.dumps(detail, ensure_ascii=False, indent=2)) + '</pre></details></td></tr>')
         matrix = {}
         def candidate_label(record):
@@ -102,17 +134,17 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
         matrix_rows = ''.join('<tr><th>' + escape(case) + '</th>' + ''.join(
             '<td>' + escape(' '.join(values.get(name, ['—']))) + '</td>' for name in names) + '</tr>'
             for case, values in sorted(matrix.items()))
-        details = '<h2>Case outcomes</h2><div class="scroll"><table><thead><tr><th>Case</th>' + ''.join(
+        details = '<div class="section-heading"><div><span class="eyebrow">CASE MATRIX</span><h2>Case outcomes</h2></div></div><div class="scroll"><table><thead><tr><th>Case</th>' + ''.join(
             '<th>' + escape(name) + '</th>' for name in names) + '</tr></thead><tbody>' + matrix_rows + '</tbody></table></div>'
-        details += '''<h2>Attempts and context</h2><div class="controls"><label>Search <input id="search" type="search"></label>
-<label>Status <select id="status"><option value="">All</option><option>completed</option><option>error</option><option>exhausted</option></select></label></div>
+        details += '''<div class="section-heading"><div><span class="eyebrow">EVIDENCE</span><h2>Attempts and context</h2></div></div><div class="controls"><label>Search <input id="search" type="search"></label>
+<label>Status <select id="status"><option value="">All</option><option>completed</option><option>error</option><option>exhausted</option></select></label><output id="result-count" aria-live="polite"></output></div>
 <div class="scroll"><table id="attempts"><thead><tr>''' + ''.join('<th>' + value + '</th>' for value in
             ['Case', 'Candidate', 'Attempt', 'Workers', 'Status', 'Test outcome', 'Judge', 'Seconds', 'Stop reason', 'Details']) + '</tr></thead><tbody>' + ''.join(attempt_rows) + '</tbody></table></div>'
     dataset_section = ''
     if cases is not None:
         verified = sum(case_metadata(case).get('validation', {}).get('status') == 'verified' for case in cases)
         grouped = sum(case_metadata(case).get('kind') == 'group' for case in cases)
-        dataset_section = f'<h2>Dataset quality</h2><p>{len(cases)} cases · {grouped} reconstructed groups · {verified} with saved verification evidence</p>'
+        dataset_section = f'<section class="dataset-quality"><h2>Dataset quality</h2><p>{len(cases)} cases · {grouped} reconstructed groups · {verified} with saved verification evidence</p></section>'
     statistical = [{key: group[key] for key in ('model', 'profile', 'concurrency', 'case_count',
                     'solve_within_k', 'failure_categories', 'retry_count', 'setup_seconds', 'model_seconds', 'test_seconds')}
                    for group in groups]
@@ -120,35 +152,61 @@ def report(records: list[RunRecord], output: Path, *, cases: list | None = None,
                'Test success', '95% case bootstrap interval', 'Test Coverage', 'Judge mean', 'Judge Coverage',
                'Legacy combined accuracy', 'Attempts/hour', 'Solved/hour', 'Latency p50', 'Latency p95',
                'Output tokens/s', 'Speedup', 'Efficiency', 'Missing usage', 'Estimated candidate cost']
-    document = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AnyBench report</title><style>
-:root{color-scheme:light}body{font:15px system-ui;margin:0;background:#f3f6fb;color:#172033}
-main{max-width:1440px;margin:40px auto;padding:0 24px}h1{font-size:34px;margin-bottom:8px}h2{margin-top:32px}
-p{max-width:1000px;line-height:1.6}.muted{color:#526279}.scroll{overflow:auto;background:white;border:1px solid #dbe2ed;border-radius:8px}
-table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:12px;text-align:left;border-bottom:1px solid #e5eaf2;white-space:nowrap}
-th{background:#eaf0f9;cursor:pointer}th:focus{outline:2px solid #2563eb}pre{white-space:pre-wrap;word-break:break-word;max-width:850px;max-height:450px;overflow:auto}
-.controls{display:flex;gap:20px;margin:12px 0}input,select{padding:8px;border:1px solid #b9c6da;border-radius:4px}svg{background:white;max-width:760px;width:100%;border:1px solid #dbe2ed;border-radius:8px}
-.badge{display:inline-block;padding:5px 10px;background:#dbeafe;border-radius:20px;color:#1e40af}summary{cursor:pointer}
-</style></head><body><main><span class="badge">Offline experiment report</span><h1>AnyBench</h1>
-<p class="muted">Execution, local tests, and model judging are separate measurements. Exhausted attempts do not count as solved.
-Legacy combined accuracy retains the earlier minimum-of-evaluators calculation. Partial and unverified experiments are labeled;
-confidence intervals resample cases, not repeated attempts. N/A means unavailable.</p>
-<h2>Models</h2><div class="scroll"><table id="models"><thead><tr>''' + ''.join('<th>' + c + '</th>' for c in columns) + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
-<p class="muted">Throughput uses the union of active attempt intervals, excluding resume downtime. Speedup compares the lowest measured worker count.
-Efficiency divides speedup by the worker-count increase. Cost uses the supplied per-million-token rate card and excludes judging.</p>
-<h2>Accuracy vs speed</h2><svg viewBox="0 0 760 360" role="img" aria-label="Local test success versus completed attempts per active hour">
-<path d="M60 30 V310 H710" fill="none" stroke="#64748b"/><text x="8" y="50">100%</text><text x="20" y="310">0%</text><text x="460" y="345">Completed attempts / active hour</text>''' + ''.join(points) + '''</svg>
-<p class="muted">Each point shows local test success and completed attempts per active hour. Hover for candidate details.</p>
-''' + dataset_section + '<h2>Repeated attempts and diagnostics</h2><details><summary>Show statistical details</summary><pre>' + escape(json.dumps(statistical, indent=2)) + '</pre></details>' + details + '''
-<p class="muted">''' + ('Aggregate-only export.' if aggregate_only else 'Private patches and logs included.' if include_private else 'Private patches and logs omitted. Use --include-private for local debugging.') + '''</p>
-</main><script>
+    compact_columns = [columns[i] for i in [0, 2, 3, 4, 6, 8, 10, 12, 14, 20]]
+    headers = lambda names: ''.join('<th scope="col">' + name + '</th>' for name in names)
+    css = (Path(__file__).parent / 'report_assets' / 'report.css').read_text()
+    anybench_logo = catalog()['icons']['anybench']
+    logo_license = (Path(__file__).parent / 'brand_assets' / 'LICENSE.lobe-icons').read_text()
+    completed = sum(r.status == 'completed' for r in records)
+    passed = sum(r.status == 'completed' and r.test_passed is True for r in records)
+    scored = sum(r.test_passed is not None for r in records)
+    overview = ''.join(f'<div class="stat"><small>{name}</small><strong>{value}</strong><span>{note}</span></div>'
+                       for name, value, note in [
+                           ('Candidate groups', len(groups), 'Model, harness, context and workers'),
+                           ('Recorded attempts', len(records), f'{completed} completed executions'),
+                           ('Passing attempts', passed, f'{scored} attempts with local test outcomes'),
+                           ('Cases observed', len({r.case_id for r in records}), 'Distinct cases in these results')])
+    grid = ''.join(f'<path class="grid" d="M60 {310 - score * 260:.0f} H710"/>'
+                   f'<text x="45" y="{314 - score * 260:.0f}" text-anchor="end">{score:.0%}</text>'
+                   for score in [0, .25, .5, .75, 1])
+    ticks = ''.join(f'<text x="{60 + fraction * 620:.0f}" y="332" text-anchor="middle">'
+                    f'{maximum * fraction:.0f}</text>' for fraction in [0, .25, .5, .75, 1])
+    privacy_note = ('Aggregate-only export.' if aggregate_only else 'Private patches and logs included.'
+                    if include_private else 'Private patches and logs omitted. Use --include-private for local debugging.')
+    candidate_section = ('<div class="candidate-grid">' + ''.join(cards) + '</div>' if groups else
+                         '<div class="empty-report">No attempts recorded yet. Run a benchmark to compare candidates.</div>')
+    document = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Brand assets from Lobe Icons. {logo_license} -->
+<title>AnyBench · Benchmark report</title><style>{css}</style></head><body>
+<header class="report-topbar"><a href="#overview" class="wordmark"><img src="{anybench_logo}" alt="" width="27" height="27">AnyBench <span>Report</span></a>
+<nav aria-label="Report sections"><a href="#models">Candidates</a><a href="#analysis">Analysis</a><a href="#diagnostics">Diagnostics</a></nav></header>
+<main id="overview"><div class="hero"><div><span class="badge">Offline experiment report</span><h1>Benchmark results</h1>
+<p>Compare how your candidates perform. Follow every result from its harness and API provider to the tests that measured it.</p></div><div class="hero-icon"><img src="{anybench_logo}" alt="" width="39" height="39"></div></div>
+<section class="stats" aria-label="Experiment overview">{overview}</section>
+<section aria-labelledby="candidate-heading"><div class="section-heading"><div><span class="eyebrow">CANDIDATE PERFORMANCE</span><h2 id="candidate-heading">Models</h2><p>Harness and provider identities follow the recorded configuration.</p></div><span class="badge">{len(groups)} groups</span></div>
+{candidate_section}<div class="scroll" tabindex="0" role="region" aria-label="Candidate metrics"><table id="models"><caption>Core metrics · select a column heading to sort</caption><thead><tr>{headers(compact_columns)}</tr></thead><tbody>{''.join(compact_rows)}</tbody></table></div>
+<p class="table-hint">Scroll horizontally for all metrics. Providers with unknown or custom endpoints use a neutral icon; older runs may not include provider information.</p>
+<details class="expanded-metrics"><summary>All measurements · coverage, confidence, cost and scaling</summary><div class="scroll" tabindex="0" role="region" aria-label="All candidate measurements"><table><thead><tr>{headers(columns)}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></details></section>
+<section class="analysis-grid" id="analysis"><div class="chart-card"><span class="eyebrow">PERFORMANCE FRONTIER</span><h2>Accuracy vs speed</h2>
+<svg class="chart" viewBox="0 0 760 375" role="img" aria-label="Local test success versus completed attempts per active hour">
+{grid}<path class="axis" d="M60 30 V310 H710" fill="none"/>{ticks}<text x="385" y="365" text-anchor="middle">Completed attempts / active hour</text>{''.join(points)}</svg>
+<div class="chart-legend">{''.join(legend)}</div><p class="muted">Each point shows local test success and completed attempts per active hour. Hover for candidate details.</p></div>
+<aside class="method-card"><span class="eyebrow">READING THESE RESULTS</span><h2>Separate signals. Clear evidence.</h2><dl>
+<dt>Execution, tests and judging</dt><dd>Execution, local tests, and model judging are separate measurements. Exhausted attempts do not count as solved. Legacy combined accuracy retains the earlier minimum-of-evaluators calculation.</dd>
+<dt>Coverage and confidence</dt><dd>Partial and unverified experiments are labeled. Confidence intervals resample cases, not repeated attempts. N/A means unavailable.</dd>
+<dt>Throughput and scaling</dt><dd>Throughput uses the union of active attempt intervals, excluding resume downtime. Speedup compares the lowest measured worker count. Efficiency divides speedup by the worker-count increase.</dd>
+<dt>Estimated cost</dt><dd>Cost uses the supplied per-million-token rate card and excludes judging.</dd></dl><span class="badge">Logos embedded · works offline</span></aside></section>
+{dataset_section}<section id="diagnostics"><div class="section-heading"><div><span class="eyebrow">RELIABILITY</span><h2>Repeated attempts and diagnostics</h2></div></div>
+<details class="expanded-metrics"><summary>Show statistical details</summary><pre>{escape(json.dumps(statistical, indent=2))}</pre></details>{details}</section>
+<footer><span>{privacy_note}</span><span>AnyBench · Brand assets from Lobe Icons (MIT)</span></footer></main>
+''' + '''<script>
 const input=document.getElementById('search'),status=document.getElementById('status');
-function filter(){document.querySelectorAll('#attempts tbody tr').forEach(r=>{r.hidden=!(r.textContent.toLowerCase().includes(input.value.toLowerCase())&&(!status.value||r.dataset.status===status.value))})}
-if(input){input.addEventListener('input',filter);status.addEventListener('change',filter)}
-document.querySelectorAll('table thead th').forEach((th)=>{th.tabIndex=0;th.setAttribute('role','button');
-function sort(){const table=th.closest('table'),body=table.tBodies[0],index=Array.from(th.parentNode.children).indexOf(th);const dir=th.dataset.direction==='up'?-1:1;th.dataset.direction=dir===1?'up':'down';th.setAttribute('aria-sort',dir===1?'ascending':'descending');
+function filter(){let visible=0;const rows=document.querySelectorAll('#attempts tbody tr');rows.forEach(r=>{r.hidden=!(r.textContent.toLowerCase().includes(input.value.toLowerCase())&&(!status.value||r.dataset.status===status.value));if(!r.hidden)visible++});document.getElementById('result-count').textContent=`${visible} of ${rows.length} attempts`}
+if(input){input.addEventListener('input',filter);status.addEventListener('change',filter);filter()}
+document.querySelectorAll('table thead th').forEach(th=>{const button=document.createElement('button');button.type='button';button.textContent=th.textContent;button.setAttribute('aria-label',th.textContent);th.replaceChildren(button);
+function sort(){const table=th.closest('table'),body=table.tBodies[0],index=Array.from(th.parentNode.children).indexOf(th);const dir=th.getAttribute('aria-sort')==='ascending'?-1:1;table.querySelectorAll('thead th').forEach(h=>h.removeAttribute('aria-sort'));th.setAttribute('aria-sort',dir===1?'ascending':'descending');
 Array.from(body.rows).sort((a,b)=>a.cells[index].textContent.localeCompare(b.cells[index].textContent,undefined,{numeric:true})*dir).forEach(row=>body.appendChild(row))}
-th.addEventListener('click',sort);th.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();sort()}})})
+button.addEventListener('click',sort)})
 </script></body></html>'''
     output.parent.mkdir(parents=True, exist_ok=True)
     with open(output, 'w', encoding='utf-8', opener=_private_opener) as stream:

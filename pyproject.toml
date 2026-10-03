@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any-bench"
-version = "0.6.1"
+version = "0.6.2"
 description = "Build private repository coding benchmarks and run them in Docker"
 readme = "README.md"
 license = "MIT"
@@ -27,7 +27,7 @@ anybench = "anybench.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md", "studio_assets/*.html", "studio_assets/assets/*"]
+anybench = ["skills/anybench/*.md", "skills/anybench/references/*.md", "brand_assets/*", "report_assets/*", "studio_assets/*.html", "studio_assets/assets/*"]
 
 [tool.ruff]
 target-version = "py311"

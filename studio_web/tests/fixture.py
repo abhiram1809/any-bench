@@ -13,7 +13,7 @@ write_cases(session / "verified.csv", [Case("browser-001", "fixture/repo", "a" *
 now = time.time()
 write_jsonl(session / "attempts.jsonl", [RunRecord("browser-001", "local-candidate", 1,
     "completed", 3, started_at=now - 5, finished_at=now - 2, test_passed=True,
-    judge_score=.9, harness="anybench", model_id="local/model")])
+    judge_score=.9, harness="anybench", model_id="local/model", provider_host="openrouter.ai")])
 run = RunObserver()
 run.set_meta("command", "start")
 run.set_meta("session_path", str(session.resolve()))
@@ -42,3 +42,19 @@ run.emit("model.response", "candidate", {"prompt_tokens": 80, "completion_tokens
 run.emit("tool.completed", "candidate", {"tool": "Run", "status": "ok"},
          case_id="browser-001", model="local-candidate")
 print(run.run_id)
+
+# Synthetic report preview: never reads real run data or calls a model.
+from anybench.report import report
+report_records = []
+for name, harness, host, solved in [
+    ('Codex candidate', 'codex', 'api.openai.com', 4),
+    ('Claude candidate', 'claude', 'api.anthropic.com', 3),
+    ('Routed candidate', 'anybench', 'openrouter.ai', 3),
+    ('OpenCode candidate', 'opencode', 'private.example', 2),
+]:
+    for i in range(5):
+        report_records.append(RunRecord(f'parser-{i:03}', name, 1, 'completed', 24 + i * 4,
+            harness=harness, model_id='fixture/model', provider_host=host,
+            test_passed=i < solved, judge_score=.8, context_profile='enhanced',
+            prompt_tokens=1200, completion_tokens=400, cached_prompt_tokens=0))
+report(report_records, session / 'report.html')

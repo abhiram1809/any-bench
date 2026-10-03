@@ -129,9 +129,12 @@ def _run_one(case: Case, config: ModelConfig, attempt: int = 1,
              image: str = "anybench-sandbox:latest", max_steps: int = 100,
              workspace_size: str = "512m", memory: str = "1g",
              artifact_base: Path | None = None) -> RunRecord:
+    from .branding import configured_host
+
     start = time.monotonic()
     record = RunRecord(case.case_id, config.name, attempt, "error", 0,
-                       started_at=time.time(), harness=config.harness, model_id=config.model)
+                       started_at=time.time(), harness=config.harness, model_id=config.model,
+                       provider_host=configured_host(asdict(config), environment=True))
     record.context_profile = config.context_profile if config.harness == "anybench" else "external"
     client = None
     try:

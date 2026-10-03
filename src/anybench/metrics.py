@@ -5,6 +5,7 @@ from collections import defaultdict
 import random
 from statistics import mean
 
+from .branding import group_brands
 from .model import RunRecord
 from .metadata import case_metadata
 
@@ -118,6 +119,7 @@ def summary(records: list[RunRecord], cases: list | None = None,
                     errors[event["evaluation"]["status"]] += 1
         group = {"model": model, "harness": harness, "model_id": model_id, "profile": profile,
                  "context_window_tokens": window, "harness_version": version,
+                 "branding": group_brands(items, manifest),
                  "concurrency": concurrency, "attempts": len(items), "expected_attempts": expected,
                  "complete": len(items) == expected if expected is not None else None,
                  "completed": completed, "execution_success": completed / len(items),
